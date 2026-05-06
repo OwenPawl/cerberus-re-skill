@@ -13,8 +13,24 @@ from ghidra_re_skill.core.platform_helpers import (
 )
 
 
+_CONFIG_FILE_VALUES: dict[str, str] = {}
+
+
+def _load_config_env(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip("\"'")
+    return values
+
+
 def _env(key: str, default: str = "") -> str:
-    return os.environ.get(key, default)
+    return os.environ.get(key) or _CONFIG_FILE_VALUES.get(key, default)
 
 
 def _flag(key: str, default: str = "1") -> str:
@@ -34,7 +50,9 @@ class Config:
 
     def reload(self) -> None:
         platform = get_platform()
-        config_home = get_config_home()
+        config_home = Path(os.environ.get("GHIDRA_RE_CONFIG_HOME", str(get_config_home())))
+        global _CONFIG_FILE_VALUES
+        _CONFIG_FILE_VALUES = _load_config_env(config_home / "config.env")
         skill_root = get_skill_root()
         workspace = get_workspace_root()
 
@@ -161,16 +179,21 @@ class Config:
         if self.platform == "macos":
             return "/Applications/Ghidra"
         if self.platform == "windows":
-            return "C:/Program Files/Ghidra"
+            local_app_data = os.environ.get("LOCALAPPDATA")
+            if local_app_data:
+                return str(Path(local_app_data) / "Programs" / "Ghidra")
+            return str(Path.home() / "AppData" / "Local" / "Programs" / "Ghidra")
         return "/opt/ghidra"
 
     def _default_jdk(self) -> str:
+        java_home = os.environ.get("JAVA_HOME")
+        if java_home:
+            return java_home
         if self.platform == "macos":
             return "/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"
         if self.platform == "windows":
             return "C:/Program Files/Eclipse Adoptium/jdk-21"
-        jh = os.environ.get("JAVA_HOME")
-        return jh or "/usr/lib/jvm/default-java"
+        return "/usr/lib/jvm/default-java"
 
     def _refresh_script_dirs(self) -> None:
         ghidra = str(self.ghidra_install_dir)

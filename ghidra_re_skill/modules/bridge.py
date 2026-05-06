@@ -697,15 +697,35 @@ def build() -> Path:
     require_tools()
     env = export_env()
 
-    gradle = gradle_wrapper_path(cfg.ghidra_install_dir)
-    if not gradle:
-        raise RuntimeError(f"Gradle wrapper not found in {cfg.ghidra_install_dir}")
     if not cfg.bridge_extension_dir.exists():
         raise RuntimeError(f"bridge extension directory not found at {cfg.bridge_extension_dir}")
 
+    gradle_cmd: list[str | Path]
+    gradle_cwd: Path | None = None
+    if sys.platform == "win32":
+        java = Path(cfg.ghidra_jdk) / "bin" / "java.exe"
+        wrapper_jar = cfg.ghidra_install_dir / "support" / "gradle" / "gradle-wrapper.jar"
+        wrapper_dir = wrapper_jar.parent
+        if not java.exists():
+            raise RuntimeError(f"Java not found at {java}")
+        if not wrapper_jar.exists():
+            raise RuntimeError(f"Gradle wrapper jar not found at {wrapper_jar}")
+        gradle_cmd = [
+            java,
+            "-classpath",
+            wrapper_jar,
+            "org.gradle.wrapper.GradleWrapperMain",
+        ]
+        gradle_cwd = wrapper_dir
+    else:
+        gradle = gradle_wrapper_path(cfg.ghidra_install_dir)
+        if not gradle:
+            raise RuntimeError(f"Gradle wrapper not found in {cfg.ghidra_install_dir}")
+        gradle_cmd = [gradle]
+
     run(
-        [
-            str(gradle),
+        gradle_cmd
+        + [
             "-p",
             str(cfg.bridge_extension_dir),
             f"-PGHIDRA_INSTALL_DIR={cfg.ghidra_install_dir}",
@@ -713,6 +733,7 @@ def build() -> Path:
             "distributeExtension",
         ],
         env=env,
+        cwd=gradle_cwd,
     )
 
     zips = sorted(cfg.bridge_dist_dir.glob("ghidra_*_CodexGhidraBridge.zip"))
@@ -735,7 +756,6 @@ def install() -> dict:
 
     extensions_dir = settings / "Extensions" / "Ghidra"
     installed_dir = extensions_dir / "CodexGhidraBridge"
-    app_installed_dir = ghidra_dir / "Ghidra" / "Extensions" / "CodexGhidraBridge"
     legacy_installed_dir = settings / "Extensions" / "Ghidra" / "CodexGhidraBridge"
     tools_dir = settings / "tools"
     frontend_tool_file = settings / "FrontEndTool.xml"
@@ -752,16 +772,10 @@ def install() -> dict:
         if installed_dir.exists():
             shutil.rmtree(installed_dir)
         shutil.copytree(tmp_root / "CodexGhidraBridge", installed_dir)
+        _verify_bridge_install(installed_dir)
 
         if legacy_installed_dir != installed_dir and legacy_installed_dir.exists():
             shutil.rmtree(legacy_installed_dir)
-
-        # Also install into app Extensions if writable
-        app_parent = app_installed_dir.parent
-        if app_parent.exists() and os.access(app_parent, os.W_OK):
-            if app_installed_dir.exists():
-                shutil.rmtree(app_installed_dir)
-            shutil.copytree(tmp_root / "CodexGhidraBridge", app_installed_dir)
 
         # Patch tool config files
         if tools_dir.exists():
@@ -787,6 +801,21 @@ def install() -> dict:
         "settings_dir": str(settings),
         "installed_at": installed_at,
     }
+
+
+def _verify_bridge_install(installed_dir: Path) -> None:
+    """Verify the user-level bridge extension directory is complete."""
+    required = [
+        installed_dir / "extension.properties",
+        installed_dir / "Module.manifest",
+        installed_dir / "ghidra_scripts" / "EnableCodexBridge.java",
+    ]
+    missing = [str(path) for path in required if not path.exists()]
+    jars = list((installed_dir / "lib").glob("CodexGhidraBridge*.jar"))
+    if not jars:
+        missing.append(str(installed_dir / "lib" / "CodexGhidraBridge*.jar"))
+    if missing:
+        raise RuntimeError("bridge extension install incomplete; missing: " + ", ".join(missing))
 
 
 def _patch_tool_xml(path: Path) -> None:

@@ -431,7 +431,7 @@ function Get-GhidraReNotesStatus {
         [string]$SkillRoot
     )
 
-    Invoke-GhidraReScript -ScriptName "ghidra_notes_status" -SkillRoot $SkillRoot
+    Invoke-GhidraReCli -Arguments @("notes", "status") -SkillRoot $SkillRoot
 }
 
 function Add-GhidraReNote {
@@ -455,20 +455,21 @@ function Add-GhidraReNote {
     )
 
     $args = @(
-        "title=$Title",
-        "body=$Body",
-        "category=$Category",
-        "status=$Status"
+        "--title", $Title,
+        "--body", $Body,
+        "--category", $Category,
+        "--status", $Status
     )
-    if ($Target) { $args += "target=$Target" }
-    if ($Mission) { $args += "mission=$Mission" }
-    if ($Project) { $args += "project=$Project" }
-    if ($Program) { $args += "program=$Program" }
-    if ($ProgramPath) { $args += "program_path=$ProgramPath" }
-    if ($Context) { $args += "context=$Context" }
-    if ($Platform) { $args += "platform=$Platform" }
+    if ($Target) { $args += @("--target", $Target) }
+    if ($Mission) { $args += @("--mission", $Mission) }
+    if ($Project) { $args += @("--project", $Project) }
+    if ($Program) { $args += @("--program", $Program) }
+    if ($ProgramPath) { $args += @("--program-path", $ProgramPath) }
+    if ($Context) { $args += @("--context", $Context) }
+    if ($Platform) { $args += @("--platform", $Platform) }
 
-    Invoke-GhidraReScript -ScriptName "ghidra_notes_add" -Arguments $args -SkillRoot $SkillRoot
+    $cliArgs = @("notes", "add") + $args
+    Invoke-GhidraReCli -Arguments $cliArgs -SkillRoot $SkillRoot
 }
 
 function Sync-GhidraReNotes {
@@ -477,7 +478,7 @@ function Sync-GhidraReNotes {
         [string]$SkillRoot
     )
 
-    Invoke-GhidraReScript -ScriptName "ghidra_notes_sync" -SkillRoot $SkillRoot
+    Invoke-GhidraReCli -Arguments @("notes", "sync") -SkillRoot $SkillRoot
 }
 
 function Receive-GhidraReNotes {
@@ -486,7 +487,7 @@ function Receive-GhidraReNotes {
         [string]$SkillRoot
     )
 
-    Invoke-GhidraReScript -ScriptName "ghidra_notes_pull" -SkillRoot $SkillRoot
+    Invoke-GhidraReCli -Arguments @("notes", "pull") -SkillRoot $SkillRoot
 }
 
 function Set-GhidraReNoteStatus {
@@ -505,18 +506,21 @@ function Set-GhidraReNoteStatus {
         [string]$SkillRoot
     )
 
-    $args = @(
-        "fingerprint=$Fingerprint",
-        "title=$Title",
-        "category=$Category",
-        "status=$Status"
-    )
-    if ($Summary) { $args += "summary=$Summary" }
-    if ($Body) { $args += "body=$Body" }
-    if ($Target) { $args += "target=$Target" }
-    if ($SupersededBy) { $args += "superseded_by=$SupersededBy" }
+    $resolutionParts = @()
+    if ($Summary) { $resolutionParts += $Summary }
+    if ($Body) { $resolutionParts += $Body }
+    if ($Status) { $resolutionParts += "status=$Status" }
+    if ($Title) { $resolutionParts += "title=$Title" }
+    if ($Category) { $resolutionParts += "category=$Category" }
+    if ($Target) { $resolutionParts += "target=$Target" }
+    if ($SupersededBy) { $resolutionParts += "superseded_by=$SupersededBy" }
+    $resolution = ($resolutionParts -join "`n")
 
-    Invoke-GhidraReScript -ScriptName "ghidra_notes_remediate" -Arguments $args -SkillRoot $SkillRoot
+    $cliArgs = @("notes", "remediate", $Fingerprint)
+    if ($resolution) {
+        $cliArgs += @("--resolution", $resolution)
+    }
+    Invoke-GhidraReCli -Arguments $cliArgs -SkillRoot $SkillRoot
 }
 
 function Open-GhidraReSharedNotes {
@@ -526,12 +530,7 @@ function Open-GhidraReSharedNotes {
         [string]$SkillRoot
     )
 
-    $args = @()
-    if ($Browse) {
-        $args += "browse=true"
-    }
-
-    Invoke-GhidraReScript -ScriptName "ghidra_notes_open_shared" -Arguments $args -SkillRoot $SkillRoot -RawOutput
+    Invoke-GhidraReCli -Arguments @("notes", "open-shared") -SkillRoot $SkillRoot -RawOutput
 }
 
 Export-ModuleMember -Function @(

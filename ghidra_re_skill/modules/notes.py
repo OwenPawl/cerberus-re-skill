@@ -216,6 +216,7 @@ def notes_status() -> dict:
             "--state-file", str(cfg.notes_state_file),
             "--queue-dir", str(cfg.notes_queue_dir),
             "--cache-json", str(cfg.notes_cache_json),
+            "--cache-md", str(cfg.notes_cache_md),
         ],
         capture_output=True,
         check=True,

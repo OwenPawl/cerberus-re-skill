@@ -9,7 +9,7 @@ Use this skill for repeatable, headless-first Ghidra work on macOS or Windows. I
 
 - Ghidra install:
   - macOS: `/Applications/Ghidra`
-  - Windows: `/c/Program Files/Ghidra`
+  - Windows: `%LOCALAPPDATA%\Programs\Ghidra` for a user-scoped install; `C:\Program Files\Ghidra` is also detected when already installed
 - JDK:
   - macOS: `/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home`
   - Windows: `/c/Program Files/Eclipse Adoptium/jdk-21`
@@ -30,6 +30,7 @@ To install: `pip install -e /path/to/ghidra-re-skill`
 
 1. On a fresh machine, run `ghidra-re bootstrap` once.
    - This installs the bridge extension **and** the GhidraApple community plugin automatically.
+   - On Windows, bootstrap should auto-detect Ghidra. Use `GHIDRA_INSTALL_DIR` or `GHIDRA_HOME` only as an override when detection is wrong.
    - After bootstrap, restart Ghidra and enable GhidraApple analyzers: **Analysis > Analyze All Open Files** (check the GhidraApple entries). This must be done once per project for the ObjC/msgSend/block enrichment to take effect.
    - To skip plugin install: `ghidra-re bootstrap --skip-plugins-install`
    - To install/reinstall the plugin separately: `ghidra-re plugins install ghidraapple`
@@ -103,7 +104,7 @@ To install: `pip install -e /path/to/ghidra-re-skill`
 ## Default Workflow
 
 ### 1) Import into the dedicated workspace
-- First-use bootstrap writes machine-local config to `~/.config/ghidra-re/config.env`.
+- First-use bootstrap writes machine-local config to `~/.config/ghidra-re/config.env` on macOS/Linux and `%APPDATA%\ghidra-re\config.env` on Windows.
 - Projects live under `~/ghidra-projects/projects/<project_name>/`.
 - Exports live under `~/ghidra-projects/exports/<project_name>/<program_name>/`.
 - Logs live under `~/ghidra-projects/logs/<project_name>/`.

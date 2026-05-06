@@ -106,8 +106,8 @@ The macOS bundle can install the skill, Ghidra, the launcher app, and Java 21 on
 The Windows bundle includes a PowerShell installer that can:
 - install the skill into `%USERPROFILE%\.codex\skills\ghidra-re`
 - install a user-scoped `GhidraRe` PowerShell module
-- install Java 21 when needed
-- reuse an existing Ghidra install or unpack a `ghidra_*.zip` placed next to the installer
+- reuse an existing Ghidra install or unpack `payload\Ghidra.zip`, `Ghidra.zip`, or a `ghidra_*.zip` placed next to the installer into `%LOCALAPPDATA%\Programs\Ghidra`
+- run bootstrap using an existing Java 21 JDK
 
 ## Publish to GitHub
 
@@ -130,7 +130,7 @@ The default local assumptions are:
 
 - Ghidra install:
   - macOS: `/Applications/Ghidra`
-  - Windows: `/c/Program Files/Ghidra`
+  - Windows: `%LOCALAPPDATA%\Programs\Ghidra` for a user-scoped install; `C:\Program Files\Ghidra` is also detected when already installed
 - Launcher app:
   - macOS: `/Applications/Ghidra.app`
   - Windows: `ghidraRun.bat`
@@ -138,6 +138,8 @@ The default local assumptions are:
   - macOS: `/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home`
   - Windows: `/c/Program Files/Eclipse Adoptium/jdk-21`
 - Workspace: `~/ghidra-projects`
+
+On Windows, `GHIDRA_INSTALL_DIR` and `GHIDRA_HOME` are treated as explicit overrides, not required setup. `ghidra-re bootstrap` should auto-detect normal install locations and then persist the resolved path in `%APPDATA%\ghidra-re\config.env`.
 
 Shared-notes defaults:
 

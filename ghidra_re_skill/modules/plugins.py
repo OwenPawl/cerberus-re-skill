@@ -73,8 +73,8 @@ def _ghidra_settings_dir() -> Path | None:
     return s
 
 
-def _extension_install_dirs() -> tuple[Path, Path | None]:
-    """Return (user_extensions_dir, optional_app_extensions_dir)."""
+def _extension_install_dir() -> Path:
+    """Return the required user-level Ghidra extension directory."""
     settings = _ghidra_settings_dir()
     if not settings:
         raise RuntimeError(
@@ -82,27 +82,23 @@ def _extension_install_dirs() -> tuple[Path, Path | None]:
             "Run 'ghidra-re bootstrap' first."
         )
     user_ext = settings / "Extensions" / "Ghidra"
-    app_ext = cfg.ghidra_install_dir / "Ghidra" / "Extensions"
-    app_ext_opt: Path | None = app_ext if app_ext.parent.exists() else None
-    return user_ext, app_ext_opt
+    return user_ext
 
 
 def _is_installed(extension_name: str) -> bool:
-    """Check whether *extension_name* is already installed in either location."""
+    """Check whether *extension_name* is installed in the user extension dir."""
     try:
-        user_ext, app_ext = _extension_install_dirs()
+        user_ext = _extension_install_dir()
     except Exception:
         return False
     if (user_ext / extension_name).exists():
-        return True
-    if app_ext and (app_ext / extension_name).exists():
         return True
     return False
 
 
 def _install_zip(zip_path: Path, extension_name: str) -> dict[str, Any]:
-    """Extract *zip_path* into both extension dirs; return install info."""
-    user_ext, app_ext = _extension_install_dirs()
+    """Extract *zip_path* into the user extension dir; return install info."""
+    user_ext = _extension_install_dir()
     user_ext.mkdir(parents=True, exist_ok=True)
 
     tmp_root = cfg.bridge_config_dir / f"plugin-install-{extension_name}-tmp"
@@ -123,21 +119,29 @@ def _install_zip(zip_path: Path, extension_name: str) -> dict[str, Any]:
         if dest.exists():
             shutil.rmtree(dest)
         shutil.copytree(extracted_root, dest)
+        _verify_extension_install(dest, extension_name)
         installed_dirs.append(str(dest))
-
-        # Also install to app Extensions/<name> if the directory is writable
-        if app_ext and os.access(app_ext.parent, os.W_OK):
-            app_ext.mkdir(parents=True, exist_ok=True)
-            dest_app = app_ext / extension_name
-            if dest_app.exists():
-                shutil.rmtree(dest_app)
-            shutil.copytree(extracted_root, dest_app)
-            installed_dirs.append(str(dest_app))
 
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
 
     return {"installed_dirs": installed_dirs}
+
+
+def _verify_extension_install(installed_dir: Path, extension_name: str) -> None:
+    """Verify a Ghidra extension directory has the files Ghidra loads."""
+    required = [
+        installed_dir / "extension.properties",
+        installed_dir / "Module.manifest",
+    ]
+    missing = [str(path) for path in required if not path.exists()]
+    jars = list((installed_dir / "lib").glob("*.jar"))
+    if not jars:
+        missing.append(str(installed_dir / "lib" / "*.jar"))
+    if missing:
+        raise RuntimeError(
+            f"{extension_name} install incomplete; missing: " + ", ".join(missing)
+        )
 
 
 def _find_gradle() -> str | None:

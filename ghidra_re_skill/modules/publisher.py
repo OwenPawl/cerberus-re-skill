@@ -393,8 +393,128 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PkgDir    = Join-Path $ScriptDir "ghidra-re"
 $HostChoice = if ($env:GHIDRA_RE_HOST) { $env:GHIDRA_RE_HOST } else { "auto" }
 
-& python -m ghidra_re_skill install --host $HostChoice --source $PkgDir
-exit $LASTEXITCODE
+function Get-LocalAppDataPath {
+    if ($env:LOCALAPPDATA) { return $env:LOCALAPPDATA }
+    return [Environment]::GetFolderPath("LocalApplicationData")
+}
+
+function Test-GhidraDir {
+    param([string] $Path)
+    if (-not $Path) { return $false }
+    return (Test-Path -LiteralPath (Join-Path $Path "ghidraRun.bat")) -and
+           (Test-Path -LiteralPath (Join-Path $Path "support\\analyzeHeadless.bat"))
+}
+
+function Find-ExistingGhidra {
+    $candidates = @(
+        $env:GHIDRA_INSTALL_DIR,
+        $env:GHIDRA_HOME,
+        (Join-Path (Get-LocalAppDataPath) "Programs\\Ghidra"),
+        "C:\\Program Files\\Ghidra"
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-GhidraDir $candidate) { return $candidate }
+    }
+    return $null
+}
+
+function Find-GhidraZip {
+    $candidates = @(
+        (Join-Path $ScriptDir "payload\\Ghidra.zip"),
+        (Join-Path $ScriptDir "Ghidra.zip")
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) { return $candidate }
+    }
+    $adjacent = Get-ChildItem -LiteralPath $ScriptDir -Filter "ghidra_*.zip" -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($adjacent) { return $adjacent.FullName }
+    return $null
+}
+
+function Install-BundledGhidra {
+    $existing = Find-ExistingGhidra
+    if ($existing) { return $existing }
+
+    $zip = Find-GhidraZip
+    if (-not $zip) { return $null }
+
+    $installRoot = Join-Path (Get-LocalAppDataPath) "Programs"
+    $destination = Join-Path $installRoot "Ghidra"
+    if ((Test-Path -LiteralPath $destination) -and -not (Test-GhidraDir $destination)) {
+        throw "Refusing to overwrite existing non-Ghidra directory: $destination"
+    }
+    if (Test-GhidraDir $destination) { return $destination }
+
+    New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
+    $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("ghidra-re-ghidra-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
+    try {
+        Write-Host "Unpacking Ghidra from $zip to $destination"
+        Expand-Archive -LiteralPath $zip -DestinationPath $tmpRoot -Force
+        $roots = @($tmpRoot) + @(
+            Get-ChildItem -LiteralPath $tmpRoot -Directory -Recurse -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty FullName
+        )
+        $expanded = $roots | Where-Object { Test-GhidraDir $_ } | Select-Object -First 1
+        if (-not $expanded) {
+            throw "No Ghidra install root found inside $zip"
+        }
+        Move-Item -LiteralPath $expanded -Destination $destination
+    }
+    finally {
+        if (Test-Path -LiteralPath $tmpRoot) {
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    if (-not (Test-GhidraDir $destination)) {
+        throw "Ghidra install verification failed at $destination"
+    }
+    return $destination
+}
+
+function Install-GhidraRePowerShellModule {
+    $source = Join-Path $PkgDir "powershell"
+    if (-not (Test-Path -LiteralPath (Join-Path $source "GhidraRe.psd1"))) {
+        throw "PowerShell module source not found at $source"
+    }
+
+    $documents = [Environment]::GetFolderPath("MyDocuments")
+    $moduleRoots = @(
+        (Join-Path $documents "PowerShell\\Modules\\GhidraRe"),
+        (Join-Path $documents "WindowsPowerShell\\Modules\\GhidraRe")
+    ) | Select-Object -Unique
+
+    foreach ($moduleRoot in $moduleRoots) {
+        $parent = Split-Path -Parent $moduleRoot
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+        if (Test-Path -LiteralPath $moduleRoot) {
+            Remove-Item -LiteralPath $moduleRoot -Recurse -Force
+        }
+        Copy-Item -LiteralPath $source -Destination $moduleRoot -Recurse
+        if (-not (Test-Path -LiteralPath (Join-Path $moduleRoot "GhidraRe.psd1"))) {
+            throw "PowerShell module install verification failed at $moduleRoot"
+        }
+    }
+}
+
+$GhidraDir = Install-BundledGhidra
+if ($GhidraDir) {
+    $env:GHIDRA_INSTALL_DIR = $GhidraDir
+}
+
+Install-GhidraRePowerShellModule
+
+Push-Location $PkgDir
+try {
+    & python -m ghidra_re_skill install --host $HostChoice --source $PkgDir
+    exit $LASTEXITCODE
+}
+finally {
+    Pop-Location
+}
 """
 
 _WINDOWS_README = """\
@@ -405,6 +525,7 @@ ghidra-re Windows desktop share package
 3. The installer will:
    - copy the skill into every detected skill host
    - install the GhidraRe PowerShell module
+   - unpack payload\\Ghidra.zip, Ghidra.zip, or a neighboring ghidra_*.zip to %LOCALAPPDATA%\\Programs\\Ghidra when no Ghidra install is already detected
    - run bootstrap
 
 To force a specific host, set GHIDRA_RE_HOST before launching:

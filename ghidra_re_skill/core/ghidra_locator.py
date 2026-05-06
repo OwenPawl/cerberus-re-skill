@@ -16,7 +16,12 @@ from ghidra_re_skill.core.subprocess_utils import find_tool, run_output
 
 def analyze_headless_path(ghidra_dir: Path) -> Path | None:
     """Return the analyzeHeadless executable path within *ghidra_dir*, or None."""
-    for name in ("support/analyzeHeadless", "support/analyzeHeadless.bat"):
+    names = (
+        ("support/analyzeHeadless.bat", "support/analyzeHeadless")
+        if is_windows()
+        else ("support/analyzeHeadless", "support/analyzeHeadless.bat")
+    )
+    for name in names:
         candidate = ghidra_dir / name
         if candidate.exists():
             return candidate
@@ -38,11 +43,39 @@ def ghidra_run_path(ghidra_dir: Path) -> Path | None:
     return None
 
 
+def _windows_short_path(path: Path) -> Path:
+    """Return the Windows 8.3 short path when available."""
+    if not is_windows():
+        return path
+    try:
+        import ctypes
+
+        get_short_path_name = ctypes.windll.kernel32.GetShortPathNameW
+        source = str(path)
+        size = get_short_path_name(source, None, 0)
+        if size <= 0:
+            return path
+        buffer = ctypes.create_unicode_buffer(size)
+        if get_short_path_name(source, buffer, size) <= 0:
+            return path
+        short = Path(buffer.value)
+        return short if short.exists() else path
+    except Exception:
+        return path
+
+
 def gradle_wrapper_path(ghidra_dir: Path) -> Path | None:
     """Return the Gradle wrapper path bundled with Ghidra, or None."""
-    for name in ("support/gradle/gradlew", "support/gradle/gradlew.bat"):
+    names = (
+        ("support/gradle/gradlew.bat", "support/gradle/gradlew")
+        if is_windows()
+        else ("support/gradle/gradlew", "support/gradle/gradlew.bat")
+    )
+    for name in names:
         candidate = ghidra_dir / name
         if candidate.exists():
+            if is_windows() and " " in str(candidate):
+                return _windows_short_path(candidate)
             return candidate
     return None
 
@@ -128,10 +161,11 @@ def detect_ghidra_dir() -> Path | None:
         ]
     elif plat == "windows":
         pf = Path(os.environ.get("PROGRAMFILES", "C:/Program Files"))
+        local_app_data = Path(os.environ.get("LOCALAPPDATA", str(home / "AppData" / "Local")))
         candidates = [
-            pf / "Ghidra",
+            local_app_data / "Programs" / "Ghidra",
             Path("C:/Tools/Ghidra"),
-            home / "AppData" / "Local" / "Programs" / "Ghidra",
+            pf / "Ghidra",
             home / "Downloads",
             home / "Desktop",
         ]

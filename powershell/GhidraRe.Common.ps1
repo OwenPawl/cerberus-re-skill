@@ -248,3 +248,48 @@ function Invoke-GhidraReScript {
 
     return (ConvertFrom-GhidraReJsonIfPossible -Output $joined)
 }
+
+function Invoke-GhidraReCli {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments,
+        [string]$SkillRoot,
+        [switch]$RawOutput
+    )
+
+    $resolvedRoot = Resolve-GhidraReSkillRoot -SkillRoot $SkillRoot
+    $oldRoot = $env:GHIDRA_RE_ROOT
+    $env:GHIDRA_RE_ROOT = $resolvedRoot
+    try {
+        Push-Location $resolvedRoot
+        try {
+            $output = & python -m ghidra_re_skill @Arguments 2>&1
+            $exitCode = $LASTEXITCODE
+        }
+        finally {
+            Pop-Location
+        }
+    }
+    finally {
+        if ($null -eq $oldRoot) {
+            Remove-Item Env:\GHIDRA_RE_ROOT -ErrorAction SilentlyContinue
+        } else {
+            $env:GHIDRA_RE_ROOT = $oldRoot
+        }
+    }
+
+    $joined = Join-GhidraReOutput -Lines $output
+    if ($exitCode -ne 0) {
+        if ($joined) {
+            throw $joined
+        }
+        throw "ghidra-re CLI failed: $($Arguments -join ' ')"
+    }
+
+    if ($RawOutput) {
+        return $joined
+    }
+
+    return (ConvertFrom-GhidraReJsonIfPossible -Output $joined)
+}

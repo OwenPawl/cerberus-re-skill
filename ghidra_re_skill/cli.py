@@ -635,6 +635,9 @@ def notes_add(
     mission: str = typer.Option("", help="Mission name."),
     project: str = typer.Option("", help="Project name."),
     program: str = typer.Option("", help="Program name."),
+    program_path: str = typer.Option("", "--program-path", help="Program path."),
+    context: str = typer.Option("", "--context", help="Context mode."),
+    platform: str = typer.Option("", help="Observed platform."),
     status: str = typer.Option("open", help="Note status."),
 ) -> None:
     """Add a shared note."""
@@ -649,6 +652,9 @@ def notes_add(
             mission_name=mission,
             project_name=project,
             program_name=program,
+            program_path=program_path,
+            context_mode=context,
+            platform=platform,
             status=status,
         )
         _print_json(result)
