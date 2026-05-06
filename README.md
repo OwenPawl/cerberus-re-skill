@@ -66,7 +66,11 @@ The old [use-case-driven-notes.md](./references/use-case-driven-notes.md) file i
 
 ## Quick install
 
-The recommended install path for either host is the Python CLI installer. It copies the checkout into the right place, runs `bootstrap`, and installs the Ghidra live-bridge extension:
+The recommended install path for either host is the Python CLI installer. It copies the checkout into the right place, runs `bootstrap`, and installs the Ghidra live-bridge extension. On macOS, bootstrap also attempts to install the Apple-oriented extensions used by this skill:
+
+- `GhidraApple`, built from source for Ghidra 12.x so it does not show as an incompatible/red Ghidra 11 extension
+- `SleighDevTools`, built from the matching Ghidra source tag
+- `GnuDisassembler`, built from the matching Ghidra source tag with the native `gdis` provider for the local macOS architecture
 
 ```bash
 pip install -e .                                          # install the Python package first
@@ -93,6 +97,13 @@ ghidra-re bootstrap
 ```
 
 Both hosts load the same `SKILL.md` (YAML frontmatter with `name` + `description`) and the same Python CLI surface; nothing in the skill needs to know which host launched it.
+
+For a standalone retry of the macOS disassembly extensions:
+
+```bash
+brew install flex bison texinfo zlib binutils zstd
+ghidra-re plugins install macos-disassembly --force
+```
 
 If you want a one-file share bundle:
 

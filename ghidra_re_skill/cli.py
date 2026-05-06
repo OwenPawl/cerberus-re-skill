@@ -159,7 +159,7 @@ def generate_xpc_harness_cmd(
 def bootstrap(
     skip_smoke_test: bool = typer.Option(False, "--skip-smoke-test", help="Skip analyzeHeadless smoke test."),
     skip_bridge_install: bool = typer.Option(False, "--skip-bridge-install", help="Skip bridge extension install."),
-    skip_plugins_install: bool = typer.Option(False, "--skip-plugins-install", help="Skip community plugin install (GhidraApple)."),
+    skip_plugins_install: bool = typer.Option(False, "--skip-plugins-install", help="Skip community/GPL plugin install (GhidraApple, SleighDevTools, GnuDisassembler)."),
     no_write_config: bool = typer.Option(False, "--no-write-config", help="Do not write config file."),
     config_file: Optional[str] = typer.Option(None, "--config-file", help="Path to config file."),
 ) -> None:
@@ -222,6 +222,7 @@ def bootstrap(
             _die(f"bridge install failed: {e}")
 
     plugins_status_str = "skipped"
+    disassembly_status_str = "skipped"
     if not skip_plugins_install:
         try:
             from ghidra_re_skill.modules.plugins import install_ghidra_apple
@@ -232,6 +233,16 @@ def bootstrap(
             plugins_status_str = f"failed ({e})"
             console.print(f"[yellow]Warning:[/yellow] GhidraApple install failed: {e}")
             console.print("[dim]Run 'ghidra-re plugins install' to retry.[/dim]")
+        try:
+            from ghidra_re_skill.modules.plugins import install_macos_disassembly_extensions
+            result = install_macos_disassembly_extensions()
+            disassembly_status_str = result.get("status", "installed")
+        except Exception as e:
+            # Non-fatal: Ghidra works without the GPL external disassembler, but
+            # macOS RE workflows should get a clear retry path.
+            disassembly_status_str = f"failed ({e})"
+            console.print(f"[yellow]Warning:[/yellow] macOS disassembler extension install failed: {e}")
+            console.print("[dim]Run 'ghidra-re plugins install macos-disassembly --force' to retry.[/dim]")
 
     console.print(f"Skill root: {cfg.skill_root}")
     console.print(f"Ghidra: {detected_ghidra}")
@@ -239,6 +250,7 @@ def bootstrap(
     console.print(f"Workspace: {workspace}")
     console.print(f"Bridge: {bridge_status}")
     console.print(f"Plugins (GhidraApple): {plugins_status_str}")
+    console.print(f"Plugins (macOS disassembly): {disassembly_status_str}")
     if plugins_status_str in ("installed",):
         console.print(
             "[dim]Restart Ghidra and enable GhidraApple analyzers via "
@@ -1093,7 +1105,10 @@ def install_cmd(
 
 @plugins_app.command("install")
 def plugins_install(
-    plugin: str = typer.Argument("ghidraapple", help="Plugin to install (ghidraapple)."),
+    plugin: str = typer.Argument(
+        "ghidraapple",
+        help="Plugin to install (ghidraapple, sleighdevtools, gnudisassembler, macos-disassembly).",
+    ),
     force: bool = typer.Option(False, "--force", help="Re-install even if already present."),
     build_from_source: bool = typer.Option(
         False, "--build-from-source",
@@ -1102,16 +1117,30 @@ def plugins_install(
     ),
 ) -> None:
     """Install a community Ghidra plugin."""
-    if plugin.lower().replace("-", "").replace("_", "") not in ("ghidraapple", "apple"):
-        _die(f"Unknown plugin '{plugin}'. Available: ghidraapple")
+    plugin_key = plugin.lower().replace("-", "").replace("_", "")
     try:
-        from ghidra_re_skill.modules.plugins import install_ghidra_apple
-        result = install_ghidra_apple(force=force, build_from_source=build_from_source)
+        if plugin_key in ("ghidraapple", "apple"):
+            from ghidra_re_skill.modules.plugins import install_ghidra_apple
+            result = install_ghidra_apple(force=force, build_from_source=build_from_source)
+        elif plugin_key in ("sleighdevtools", "sleigh"):
+            from ghidra_re_skill.modules.plugins import install_sleigh_dev_tools
+            result = install_sleigh_dev_tools(force=force)
+        elif plugin_key in ("gnudisassembler", "gnudisassembly", "gdis"):
+            from ghidra_re_skill.modules.plugins import install_gnu_disassembler
+            result = install_gnu_disassembler(force=force)
+        elif plugin_key in ("macosdisassembly", "macdisassembly", "disassembly"):
+            from ghidra_re_skill.modules.plugins import install_macos_disassembly_extensions
+            result = install_macos_disassembly_extensions(force=force)
+        else:
+            _die(
+                f"Unknown plugin '{plugin}'. Available: ghidraapple, "
+                "sleighdevtools, gnudisassembler, macos-disassembly"
+            )
         _print_json(result)
         if result.get("status") == "already_installed":
             console.print("[yellow]Already installed.[/yellow] Use --force to reinstall.")
         elif result.get("ok"):
-            console.print("[bold green]GhidraApple installed.[/bold green]")
+            console.print("[bold green]Plugin installed.[/bold green]")
             console.print(f"[dim]{result.get('note', '')}[/dim]")
     except Exception as e:
         _die(str(e))
