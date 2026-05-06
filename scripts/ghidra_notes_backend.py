@@ -535,6 +535,54 @@ def cmd_status(args):
     }
     print(json.dumps(payload, indent=2))
 
+
+def cmd_remediate(args):
+    state = load_state(Path(args.state_file))
+    queue_dir = Path(args.queue_dir)
+    queue_dir.mkdir(parents=True, exist_ok=True)
+
+    note_id = args.note_id.strip()
+    body = args.comment.strip() or args.resolution.strip()
+    note = {
+        "title": args.title or f"Remediated note {note_id}",
+        "body": body,
+        "category": args.category,
+        "target": args.target,
+        "platform": args.platform or "unknown",
+        "skill_version": args.skill_version or "unknown",
+        "observed_at": args.observed_at or utc_now(),
+        "status": "remediated",
+        "fingerprint": note_id,
+        "session_metadata": json.loads(args.session_metadata_json) if args.session_metadata_json else {},
+    }
+    if args.resolution:
+        note["remediation_summary"] = args.resolution
+
+    payload = {
+        "version": 1,
+        "event_kind": "remediate",
+        "queued_at": utc_now(),
+        "note": note,
+    }
+    path = queue_payload_path(queue_dir, note["fingerprint"], "remediate")
+    write_json(path, payload)
+
+    state["pending_queue_count"] = len(list(queue_dir.glob("*.json")))
+    save_state(Path(args.state_file), state)
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "queued": True,
+                "event_kind": "remediate",
+                "queue_file": str(path),
+                "note": note,
+            },
+            indent=2,
+        )
+    )
+
+
 def pull_or_sync(args, *, sync_mode: bool):
     config_path = Path(args.config_file)
     state_path = Path(args.state_file)
@@ -659,6 +707,22 @@ def build_parser():
     status_parser.add_argument("--cache-json", required=True)
     status_parser.add_argument("--cache-md", required=True)
     status_parser.set_defaults(func=cmd_status)
+
+    remediate_parser = subparsers.add_parser("remediate")
+    remediate_parser.add_argument("--config-file", required=True)
+    remediate_parser.add_argument("--state-file", required=True)
+    remediate_parser.add_argument("--queue-dir", required=True)
+    remediate_parser.add_argument("--note-id", required=True)
+    remediate_parser.add_argument("--resolution", default="")
+    remediate_parser.add_argument("--comment", default="")
+    remediate_parser.add_argument("--title", default="")
+    remediate_parser.add_argument("--category", default="workflow")
+    remediate_parser.add_argument("--target", default="")
+    remediate_parser.add_argument("--platform", default="unknown")
+    remediate_parser.add_argument("--skill-version", default="unknown")
+    remediate_parser.add_argument("--observed-at", default="")
+    remediate_parser.add_argument("--session-metadata-json", default="{}")
+    remediate_parser.set_defaults(func=cmd_remediate)
 
     sync_parser = subparsers.add_parser("sync")
     sync_parser.add_argument("--config-file", required=True)

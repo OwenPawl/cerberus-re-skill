@@ -461,7 +461,7 @@ function Install-BundledGhidra {
         if (-not $expanded) {
             throw "No Ghidra install root found inside $zip"
         }
-        Move-Item -LiteralPath $expanded -Destination $destination
+        Move-Item -LiteralPath $expanded -Destination $destination -Force
     }
     finally {
         if (Test-Path -LiteralPath $tmpRoot) {

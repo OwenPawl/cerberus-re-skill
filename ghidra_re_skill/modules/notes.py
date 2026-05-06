@@ -228,12 +228,15 @@ def remediate(note_id: str, resolution: str = "", comment: str = "") -> dict:
     """Mark a note as remediated."""
     init_files()
     py = _python()
+    skill_version = _get_skill_version()
     cmd = [
         py, str(_backend()), "remediate",
         "--config-file", str(cfg.notes_config_file),
         "--state-file", str(cfg.notes_state_file),
         "--queue-dir", str(cfg.notes_queue_dir),
         "--note-id", note_id,
+        "--platform", cfg.platform,
+        "--skill-version", skill_version,
     ]
     if resolution:
         cmd.extend(["--resolution", resolution])
@@ -243,8 +246,8 @@ def remediate(note_id: str, resolution: str = "", comment: str = "") -> dict:
     return json.loads(result.stdout.decode())
 
 
-def open_shared() -> None:
-    """Open the shared notes issue URL in the default browser."""
+def open_shared(*, browse: bool = True) -> str:
+    """Return the shared notes issue URL, optionally opening it."""
     init_files()
     config = load_json(cfg.notes_config_file, {})
     url = config.get("issue_url", "")
@@ -252,8 +255,10 @@ def open_shared() -> None:
         url = f"https://github.com/{cfg.notes_repo}/issues/{cfg.notes_issue_number}"
     if not url:
         raise RuntimeError("shared notes issue URL not configured")
-    import webbrowser
-    webbrowser.open(url)
+    if browse:
+        import webbrowser
+        webbrowser.open(url)
+    return url
 
 
 def _get_skill_version() -> str:

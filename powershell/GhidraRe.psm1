@@ -530,7 +530,14 @@ function Open-GhidraReSharedNotes {
         [string]$SkillRoot
     )
 
-    Invoke-GhidraReCli -Arguments @("notes", "open-shared") -SkillRoot $SkillRoot -RawOutput
+    $args = @("notes", "open-shared")
+    if ($Browse) {
+        $args += "--browse"
+    } else {
+        $args += "--no-browse"
+    }
+
+    Invoke-GhidraReCli -Arguments $args -SkillRoot $SkillRoot -RawOutput
 }
 
 Export-ModuleMember -Function @(

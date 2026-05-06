@@ -715,12 +715,18 @@ def notes_remediate(
 
 
 @notes_app.command("open-shared")
-def notes_open_shared() -> None:
-    """Open the shared notes issue in the default browser."""
+def notes_open_shared(
+    browse: bool = typer.Option(True, "--browse/--no-browse", help="Open the issue in the default browser."),
+) -> None:
+    """Open or print the shared notes issue URL."""
     from ghidra_re_skill.modules.notes import open_shared
 
     try:
-        open_shared()
+        url = open_shared(browse=browse)
+        if browse:
+            console.print(f"Opened shared notes issue: {url}")
+        else:
+            console.print(url)
     except Exception as e:
         _die(str(e))
 
