@@ -506,20 +506,30 @@ function Set-GhidraReNoteStatus {
         [string]$SkillRoot
     )
 
-    $resolutionParts = @()
-    if ($Summary) { $resolutionParts += $Summary }
-    if ($Body) { $resolutionParts += $Body }
-    if ($Status) { $resolutionParts += "status=$Status" }
-    if ($Title) { $resolutionParts += "title=$Title" }
-    if ($Category) { $resolutionParts += "category=$Category" }
-    if ($Target) { $resolutionParts += "target=$Target" }
-    if ($SupersededBy) { $resolutionParts += "superseded_by=$SupersededBy" }
-    $resolution = ($resolutionParts -join "`n")
+    $commentParts = @()
+    if ($Summary) { $commentParts += $Summary }
+    if ($Body) { $commentParts += $Body }
+    $comment = ($commentParts -join "`n")
+
+    if ($Status -eq "superseded") {
+        $cliArgs = @("notes", "supersede", $Fingerprint)
+        if ($SupersededBy) {
+            $cliArgs += @("--superseded-by", $SupersededBy)
+        }
+        if ($comment) {
+            $cliArgs += @("--comment", $comment)
+        }
+        return Invoke-GhidraReCli -Arguments $cliArgs -SkillRoot $SkillRoot
+    }
 
     $cliArgs = @("notes", "remediate", $Fingerprint)
-    if ($resolution) {
-        $cliArgs += @("--resolution", $resolution)
+    if ($Summary) {
+        $cliArgs += @("--resolution", $Summary)
     }
+    if ($comment) {
+        $cliArgs += @("--comment", $comment)
+    }
+
     Invoke-GhidraReCli -Arguments $cliArgs -SkillRoot $SkillRoot
 }
 

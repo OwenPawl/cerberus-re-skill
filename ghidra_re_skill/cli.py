@@ -714,6 +714,22 @@ def notes_remediate(
         _die(str(e))
 
 
+@notes_app.command("supersede")
+def notes_supersede(
+    note_id: str = typer.Argument(..., help="Note ID to supersede."),
+    superseded_by: str = typer.Option("", "--superseded-by", help="Replacement note ID."),
+    comment: str = typer.Option("", help="Optional comment."),
+) -> None:
+    """Mark a note as superseded."""
+    from ghidra_re_skill.modules.notes import supersede
+
+    try:
+        result = supersede(note_id, superseded_by, comment)
+        _print_json(result)
+    except Exception as e:
+        _die(str(e))
+
+
 @notes_app.command("open-shared")
 def notes_open_shared(
     browse: bool = typer.Option(True, "--browse/--no-browse", help="Open the issue in the default browser."),

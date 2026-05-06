@@ -104,8 +104,12 @@ def render_note_lines(note):
         lines.append(f"  - {' | '.join(context_bits)}")
     if note.get("status") == "remediated" and note.get("remediation_summary"):
         lines.append(f"  - remediation: {note.get('remediation_summary')}")
+    if note.get("status") == "remediated" and note.get("remediation_comment"):
+        lines.append(f"  - remediation comment: {note.get('remediation_comment')}")
     if note.get("status") == "superseded" and note.get("superseded_by"):
         lines.append(f"  - superseded by: `{note.get('superseded_by')}`")
+    if note.get("status") == "superseded" and note.get("supersede_comment"):
+        lines.append(f"  - supersede comment: {note.get('supersede_comment')}")
     return lines
 
 
@@ -344,26 +348,26 @@ def merge_event(remote_state, event):
             existing["first_seen_at"] = observed_at
             existing["occurrence_count"] = 1
             notes.append(existing)
-        else:
-            existing = upsert_note(existing, note)
         existing["status"] = "remediated"
         existing["remediated_at"] = observed_at
         existing["last_seen_at"] = observed_at
         if note.get("remediation_summary"):
             existing["remediation_summary"] = note["remediation_summary"]
+        if note.get("remediation_comment"):
+            existing["remediation_comment"] = note["remediation_comment"]
     elif event_kind == "supersede":
         if existing is None:
             existing = dict(note)
             existing["first_seen_at"] = observed_at
             existing["occurrence_count"] = 1
             notes.append(existing)
-        else:
-            existing = upsert_note(existing, note)
         existing["status"] = "superseded"
         existing["superseded_at"] = observed_at
         existing["last_seen_at"] = observed_at
         if note.get("superseded_by"):
             existing["superseded_by"] = note["superseded_by"]
+        if note.get("supersede_comment"):
+            existing["supersede_comment"] = note["supersede_comment"]
     else:
         raise RuntimeError(f"unsupported event kind: {event_kind}")
 
@@ -542,10 +546,9 @@ def cmd_remediate(args):
     queue_dir.mkdir(parents=True, exist_ok=True)
 
     note_id = args.note_id.strip()
-    body = args.comment.strip() or args.resolution.strip()
     note = {
-        "title": args.title or f"Remediated note {note_id}",
-        "body": body,
+        "title": args.title,
+        "body": "",
         "category": args.category,
         "target": args.target,
         "platform": args.platform or "unknown",
@@ -557,6 +560,8 @@ def cmd_remediate(args):
     }
     if args.resolution:
         note["remediation_summary"] = args.resolution
+    if args.comment:
+        note["remediation_comment"] = args.comment
 
     payload = {
         "version": 1,
@@ -575,6 +580,54 @@ def cmd_remediate(args):
                 "ok": True,
                 "queued": True,
                 "event_kind": "remediate",
+                "queue_file": str(path),
+                "note": note,
+            },
+            indent=2,
+        )
+    )
+
+
+def cmd_supersede(args):
+    state = load_state(Path(args.state_file))
+    queue_dir = Path(args.queue_dir)
+    queue_dir.mkdir(parents=True, exist_ok=True)
+
+    note_id = args.note_id.strip()
+    note = {
+        "title": args.title,
+        "body": "",
+        "category": args.category,
+        "target": args.target,
+        "platform": args.platform or "unknown",
+        "skill_version": args.skill_version or "unknown",
+        "observed_at": args.observed_at or utc_now(),
+        "status": "superseded",
+        "fingerprint": note_id,
+        "session_metadata": json.loads(args.session_metadata_json) if args.session_metadata_json else {},
+    }
+    if args.superseded_by:
+        note["superseded_by"] = args.superseded_by
+    if args.comment:
+        note["supersede_comment"] = args.comment
+
+    payload = {
+        "version": 1,
+        "event_kind": "supersede",
+        "queued_at": utc_now(),
+        "note": note,
+    }
+    path = queue_payload_path(queue_dir, note["fingerprint"], "supersede")
+    write_json(path, payload)
+
+    state["pending_queue_count"] = len(list(queue_dir.glob("*.json")))
+    save_state(Path(args.state_file), state)
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "queued": True,
+                "event_kind": "supersede",
                 "queue_file": str(path),
                 "note": note,
             },
@@ -716,13 +769,29 @@ def build_parser():
     remediate_parser.add_argument("--resolution", default="")
     remediate_parser.add_argument("--comment", default="")
     remediate_parser.add_argument("--title", default="")
-    remediate_parser.add_argument("--category", default="workflow")
+    remediate_parser.add_argument("--category", default="")
     remediate_parser.add_argument("--target", default="")
     remediate_parser.add_argument("--platform", default="unknown")
     remediate_parser.add_argument("--skill-version", default="unknown")
     remediate_parser.add_argument("--observed-at", default="")
     remediate_parser.add_argument("--session-metadata-json", default="{}")
     remediate_parser.set_defaults(func=cmd_remediate)
+
+    supersede_parser = subparsers.add_parser("supersede")
+    supersede_parser.add_argument("--config-file", required=True)
+    supersede_parser.add_argument("--state-file", required=True)
+    supersede_parser.add_argument("--queue-dir", required=True)
+    supersede_parser.add_argument("--note-id", required=True)
+    supersede_parser.add_argument("--superseded-by", default="")
+    supersede_parser.add_argument("--comment", default="")
+    supersede_parser.add_argument("--title", default="")
+    supersede_parser.add_argument("--category", default="")
+    supersede_parser.add_argument("--target", default="")
+    supersede_parser.add_argument("--platform", default="unknown")
+    supersede_parser.add_argument("--skill-version", default="unknown")
+    supersede_parser.add_argument("--observed-at", default="")
+    supersede_parser.add_argument("--session-metadata-json", default="{}")
+    supersede_parser.set_defaults(func=cmd_supersede)
 
     sync_parser = subparsers.add_parser("sync")
     sync_parser.add_argument("--config-file", required=True)

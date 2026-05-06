@@ -246,6 +246,28 @@ def remediate(note_id: str, resolution: str = "", comment: str = "") -> dict:
     return json.loads(result.stdout.decode())
 
 
+def supersede(note_id: str, superseded_by: str = "", comment: str = "") -> dict:
+    """Mark a note as superseded."""
+    init_files()
+    py = _python()
+    skill_version = _get_skill_version()
+    cmd = [
+        py, str(_backend()), "supersede",
+        "--config-file", str(cfg.notes_config_file),
+        "--state-file", str(cfg.notes_state_file),
+        "--queue-dir", str(cfg.notes_queue_dir),
+        "--note-id", note_id,
+        "--platform", cfg.platform,
+        "--skill-version", skill_version,
+    ]
+    if superseded_by:
+        cmd.extend(["--superseded-by", superseded_by])
+    if comment:
+        cmd.extend(["--comment", comment])
+    result = run(cmd, capture_output=True, check=True)
+    return json.loads(result.stdout.decode())
+
+
 def open_shared(*, browse: bool = True) -> str:
     """Return the shared notes issue URL, optionally opening it."""
     init_files()
