@@ -741,7 +741,10 @@ def install_sleigh_dev_tools(force: bool = False) -> dict[str, Any]:
     }
 
 
-def install_gnu_disassembler(force: bool = False) -> dict[str, Any]:
+def install_gnu_disassembler(
+    force: bool = False,
+    ensure_dependencies: bool = True,
+) -> dict[str, Any]:
     """Build and install Ghidra's GPL GnuDisassembler native provider on macOS."""
     from ghidra_re_skill.modules.bridge import auto_configure
     auto_configure()
@@ -752,12 +755,16 @@ def install_gnu_disassembler(force: bool = False) -> dict[str, Any]:
             "extension": GNU_DISASSEMBLER_EXTENSION_NAME,
             "reason": "GnuDisassembler auto-build is currently implemented for macOS only.",
         }
+    dependencies: list[dict[str, Any]] = []
+    if ensure_dependencies:
+        dependencies.append(install_sleigh_dev_tools(force=force))
     ghidra_version = _ghidra_application_version()
     if not force and _is_compatible_installed(GNU_DISASSEMBLER_EXTENSION_NAME):
         return {
             "ok": True,
             "status": "already_installed",
             "extension": GNU_DISASSEMBLER_EXTENSION_NAME,
+            "dependencies": dependencies,
             **_gnu_disassembler_skip_details(),
         }
     _ensure_gnu_disassembler_build_tools()
@@ -801,6 +808,7 @@ def install_gnu_disassembler(force: bool = False) -> dict[str, Any]:
         "status": "installed",
         "extension": GNU_DISASSEMBLER_EXTENSION_NAME,
         "method": "source",
+        "dependencies": dependencies,
         "installed_dirs": result.get("installed_dirs", []),
         "native_platform": platform_name,
     }
@@ -811,7 +819,7 @@ def install_macos_disassembly_extensions(force: bool = False) -> dict[str, Any]:
     if not is_macos():
         return {"ok": True, "status": "skipped", "reason": "not macOS"}
     sleigh = install_sleigh_dev_tools(force=force)
-    gnu = install_gnu_disassembler(force=force)
+    gnu = install_gnu_disassembler(force=force, ensure_dependencies=False)
     return {
         "ok": True,
         "status": "installed",
