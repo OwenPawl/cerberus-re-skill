@@ -158,6 +158,15 @@ class Config:
         self._refresh_script_dirs()
 
     def _default_ghidra_install(self) -> str:
+        try:
+            from ghidra_re_skill.core.ghidra_locator import detect_ghidra_dir
+
+            detected = detect_ghidra_dir()
+            if detected:
+                return str(detected)
+        except Exception:
+            pass
+
         if self.platform == "macos":
             return "/Applications/Ghidra"
         if self.platform == "windows":

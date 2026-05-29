@@ -331,8 +331,14 @@ def doctor() -> None:
     console.print(f"Config home: {cfg.config_home}")
     console.print()
 
+    detected_ghidra = detect_ghidra_dir()
+    detected_jdk = detect_jdk_dir()
+
     if is_valid_ghidra_dir(cfg.ghidra_install_dir):
         record("OK", "Configured Ghidra", str(cfg.ghidra_install_dir))
+    elif detected_ghidra:
+        record("INFO", "Configured Ghidra", str(cfg.ghidra_install_dir) + " (not set or invalid)")
+        record("OK", "Detected Ghidra", str(detected_ghidra))
     else:
         record("WARN", "Configured Ghidra", str(cfg.ghidra_install_dir) + " (not set or invalid)")
 
@@ -341,9 +347,7 @@ def doctor() -> None:
     else:
         record("WARN", "Configured JDK", str(cfg.ghidra_jdk) + " (not set or invalid)")
 
-    detected_ghidra = detect_ghidra_dir()
-    detected_jdk = detect_jdk_dir()
-    if detected_ghidra:
+    if detected_ghidra and detected_ghidra != cfg.ghidra_install_dir:
         record("INFO", "Detected Ghidra candidate", str(detected_ghidra))
     if detected_jdk:
         record("INFO", "Detected JDK candidate", str(detected_jdk))

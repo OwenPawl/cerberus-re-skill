@@ -54,18 +54,84 @@ def is_valid_ghidra_dir(d: Path) -> bool:
     return analyze_headless_path(d) is not None and ghidra_run_path(d) is not None
 
 
+def _append_candidate(candidates: list[Path], candidate: Path) -> None:
+    """Append *candidate* once, preserving discovery order."""
+    if candidate not in candidates:
+        candidates.append(candidate)
+
+
 def resolve_ghidra_dir(d: Path) -> Path | None:
-    """Resolve *d* to a valid Ghidra directory, searching one level of subdirs."""
+    """Resolve *d* to a valid Ghidra directory, searching common child layouts."""
     if not d or not d.is_dir():
         return None
     if is_valid_ghidra_dir(d):
         return d
+    for child in (
+        d / "libexec",
+        d / "share" / "ghidra",
+        d / "Contents" / "Resources",
+        d / "Contents" / "Resources" / "ghidra",
+    ):
+        if is_valid_ghidra_dir(child):
+            return child
     for sub in sorted(d.iterdir()):
         name_lower = sub.name.lower()
-        if sub.is_dir() and (name_lower.startswith("ghidra_") or name_lower.startswith("ghidra")):
+        if sub.is_dir() and (
+            name_lower.startswith("ghidra_")
+            or name_lower.startswith("ghidra")
+            or name_lower in {"current", "libexec"}
+            or name_lower[:1].isdigit()
+        ):
             if is_valid_ghidra_dir(sub):
                 return sub
+            for child in (sub / "libexec", sub / "share" / "ghidra"):
+                if is_valid_ghidra_dir(child):
+                    return child
     return None
+
+
+def _ghidra_dir_candidates_from_tool(tool_path: str | None) -> list[Path]:
+    """Return likely install roots derived from ghidraRun/analyzeHeadless on PATH."""
+    if not tool_path:
+        return []
+    try:
+        executable = Path(tool_path).resolve()
+    except Exception:
+        executable = Path(tool_path)
+
+    candidates: list[Path] = []
+    parent = executable.parent
+
+    parts = executable.parts
+    if "Cellar" in parts:
+        cellar_index = parts.index("Cellar")
+        if cellar_index + 1 < len(parts):
+            prefix = Path(*parts[:cellar_index])
+            formula = parts[cellar_index + 1]
+            _append_candidate(candidates, prefix / "opt" / formula / "libexec")
+            _append_candidate(candidates, prefix / "opt" / formula)
+
+    _append_candidate(candidates, parent)
+
+    if parent.name.lower() == "support":
+        _append_candidate(candidates, parent.parent)
+    if parent.name.lower() == "bin":
+        package_root = parent.parent
+        _append_candidate(candidates, package_root)
+        _append_candidate(candidates, package_root / "libexec")
+        _append_candidate(candidates, package_root / "share" / "ghidra")
+
+    _append_candidate(candidates, parent.parent)
+    return candidates
+
+
+def _ghidra_dir_candidates_from_path() -> list[Path]:
+    """Return likely Ghidra roots from executables available on PATH."""
+    candidates: list[Path] = []
+    for tool in ("analyzeHeadless", "ghidraRun", "ghidraRun.bat"):
+        for candidate in _ghidra_dir_candidates_from_tool(find_tool(tool)):
+            _append_candidate(candidates, candidate)
+    return candidates
 
 
 # ---------------------------------------------------------------------------
@@ -118,29 +184,53 @@ def detect_ghidra_dir() -> Path | None:
     home = Path.home()
     candidates: list[Path] = []
 
+    for candidate in _ghidra_dir_candidates_from_path():
+        _append_candidate(candidates, candidate)
+
     if plat == "macos":
-        candidates = [
+        for candidate in (
             Path("/Applications/Ghidra"),
+            Path("/Applications/Ghidra.app"),
             home / "Applications" / "Ghidra",
+            home / "Applications" / "Ghidra.app",
+            Path("/opt/homebrew/opt/ghidra/libexec"),
+            Path("/usr/local/opt/ghidra/libexec"),
+            Path("/opt/homebrew/opt/ghidra"),
+            Path("/usr/local/opt/ghidra"),
+            Path("/opt/local/share/java/ghidra"),
             Path("/Applications"),
             home / "Applications",
+            Path("/opt/homebrew/Caskroom/ghidra"),
+            Path("/usr/local/Caskroom/ghidra"),
             home / "Downloads",
-        ]
+        ):
+            _append_candidate(candidates, candidate)
     elif plat == "windows":
         pf = Path(os.environ.get("PROGRAMFILES", "C:/Program Files"))
-        candidates = [
+        pf_x86 = Path(os.environ.get("PROGRAMFILES(X86)", "C:/Program Files (x86)"))
+        local_appdata = Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local"))
+        program_data = Path(os.environ.get("PROGRAMDATA", "C:/ProgramData"))
+        for candidate in (
             pf / "Ghidra",
+            pf_x86 / "Ghidra",
             Path("C:/Tools/Ghidra"),
-            home / "AppData" / "Local" / "Programs" / "Ghidra",
+            local_appdata / "Programs" / "Ghidra",
+            home / "scoop" / "apps" / "ghidra" / "current",
+            program_data / "chocolatey" / "lib" / "ghidra" / "tools",
             home / "Downloads",
             home / "Desktop",
-        ]
+        ):
+            _append_candidate(candidates, candidate)
     else:
-        candidates = [
+        for candidate in (
             Path("/opt/ghidra"),
+            Path("/usr/share/ghidra"),
+            Path("/usr/local/share/ghidra"),
+            Path("/snap/ghidra/current"),
             Path("/opt"),
             home / "Downloads",
-        ]
+        ):
+            _append_candidate(candidates, candidate)
 
     for candidate in candidates:
         if not candidate.exists():
