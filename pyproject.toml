@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cerberus-re"
+version = "0.1.0"
+description = "Local Apple-focused reverse-engineering workbench for a three-headed Ghidra, LLDB, and Frida loop"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "requests>=2.28.0",
+]
+
+[project.scripts]
+cerberus-re = "cerberus_re_skill.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["cerberus_re_skill*"]

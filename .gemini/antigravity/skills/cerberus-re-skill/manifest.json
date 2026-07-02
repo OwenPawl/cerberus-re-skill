@@ -1,0 +1,39 @@
+{
+  "name": "cerberus-re",
+  "display_name": "Cerberus RE",
+  "version": "0.1.1",
+  "description": "Local Apple-focused reverse-engineering workbench for building a repeatable three-headed static/dynamic/instrumentation loop around Ghidra, LLDB, and Frida.",
+  "entry_point": "python -m cerberus_re_skill",
+  "install_command": "pip install -e .",
+  "requires_python": ">=3.11",
+  "commands": {
+    "bootstrap": "python -m cerberus_re_skill bootstrap",
+    "doctor": "python -m cerberus_re_skill doctor",
+    "install": "python -m cerberus_re_skill install",
+    "bridge arm": "python -m cerberus_re_skill bridge arm",
+    "bridge disarm": "python -m cerberus_re_skill bridge disarm",
+    "bridge call": "python -m cerberus_re_skill bridge call",
+    "bridge status": "python -m cerberus_re_skill bridge status",
+    "bridge sessions": "python -m cerberus_re_skill bridge sessions",
+    "bridge build": "python -m cerberus_re_skill bridge build",
+    "bridge install": "python -m cerberus_re_skill bridge install",
+    "notes add": "python -m cerberus_re_skill notes add",
+    "notes sync": "python -m cerberus_re_skill notes sync",
+    "notes pull": "python -m cerberus_re_skill notes pull",
+    "notes status": "python -m cerberus_re_skill notes status",
+    "import analyze": "python -m cerberus_re_skill import analyze",
+    "import macos-framework": "python -m cerberus_re_skill import macos-framework",
+    "import run-script": "python -m cerberus_re_skill import run-script",
+    "publish share": "python -m cerberus_re_skill publish share",
+    "publish mac-desktop": "python -m cerberus_re_skill publish mac-desktop",
+    "publish windows-desktop": "python -m cerberus_re_skill publish windows-desktop"
+  },
+  "platforms": ["windows", "macos", "linux"],
+  "tags": ["ghidra", "reverse-engineering", "apple", "macos", "binary-analysis"],
+  "technical_notes": {
+    "bridge_xml_patching": "Uses xml.etree.ElementTree; removes 'Codex Bridge' PACKAGE, adds CodexBridgePlugin to 'Ghidra Core'; skips malformed XML with warning",
+    "stale_lock_detection": "bridge-current.lock expires after 30 s via st_mtime check; prevents hangs after crash",
+    "windows_process_check": "PROCESS_QUERY_LIMITED_INFORMATION (0x1000) + GetExitCodeProcess == 259; handle always closed in finally",
+    "publisher_copytree": "shutil.copytree with ignore= callback; safe backup removes existing backup dir before move"
+  }
+}

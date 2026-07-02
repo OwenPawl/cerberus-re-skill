@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+#
+# ghidra_classify_small_functions
+#
+# Classify small FUN_* helpers with Java-backed instruction heuristics.
+#
+# Usage:
+#   ghidra_classify_small_functions <project_name> <program_name> [key=value ...]
+#
+# Key=value arguments:
+#   output=<path>              Override classification JSON path.
+#   max_bytes=64               Maximum function body size to inspect.
+#   dry_run=true               Report only. Set false to rename/apply.
+#   include_named=false        Include non-FUN_* functions.
+#   categories=all             Comma-separated category allowlist.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/common.sh"
+
+usage() {
+  sed -n '3,16p' "$0"
+}
+
+[[ $# -ge 2 ]] || {
+  usage >&2
+  exit 1
+}
+
+project_name="$1"
+program_name="$2"
+shift 2
+
+output=""
+script_args=()
+for arg in "$@"; do
+  case "$arg" in
+    output=*)
+      output="${arg#output=}"
+      script_args+=("$arg")
+      ;;
+    max_bytes=*|dry_run=*|include_named=*|categories=*|inline_arc_helpers=*)
+      script_args+=("$arg")
+      ;;
+    *)
+      printf 'ghidra-re: warning: unknown argument: %s\n' "$arg" >&2
+      ;;
+  esac
+done
+
+export_dir="$(ghidra_re_export_dir "$project_name" "$program_name")"
+mkdir -p "$export_dir"
+if [[ -z "$output" ]]; then
+  output="$export_dir/small_function_classification.json"
+  script_args+=("output=$output")
+fi
+
+"$SCRIPT_DIR/ghidra_run_script" "$project_name" "$program_name" ClassifySmallFunctions.java "${script_args[@]}" >/dev/null
+printf '{\n'
+printf '  "ok": true,\n'
+printf '  "project_name": "%s",\n' "$project_name"
+printf '  "program_name": "%s",\n' "$program_name"
+printf '  "output": "%s"\n' "$output"
+printf '}\n'

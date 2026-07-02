@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+#
+# ghidra_diff
+#
+# Compare two Ghidra export bundles using function_inventory.json.
+#
+# Usage:
+#   ghidra_diff <project_a> <program_a> <project_b> <program_b> [key=value ...]
+#
+# Key=value arguments:
+#   function_inventory_a=<path>   Override left function_inventory.json.
+#   function_inventory_b=<path>   Override right function_inventory.json.
+#   output=<path>                 Override diff JSON output path.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+usage() {
+  sed -n '3,17p' "$0"
+}
+
+[[ $# -ge 4 ]] || {
+  usage >&2
+  exit 1
+}
+
+project_a="$1"
+program_a="$2"
+project_b="$3"
+program_b="$4"
+shift 4
+
+function_inventory_a=""
+function_inventory_b=""
+output=""
+
+for arg in "$@"; do
+  case "$arg" in
+    function_inventory_a=*) function_inventory_a="${arg#function_inventory_a=}" ;;
+    function_inventory_b=*) function_inventory_b="${arg#function_inventory_b=}" ;;
+    output=*)               output="${arg#output=}" ;;
+    *) printf 'ghidra-re: warning: unknown argument: %s\n' "$arg" >&2 ;;
+  esac
+done
+
+PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 - "$project_a" "$program_a" "$project_b" "$program_b" \
+  "$function_inventory_a" "$function_inventory_b" "$output" <<'PY'
+import json
+import sys
+
+from cerberus_re_skill.modules.diffing import diff_exports
+
+project_a, program_a, project_b, program_b, inv_a, inv_b, output = sys.argv[1:8]
+
+result = diff_exports(
+    project_a=project_a,
+    program_a=program_a,
+    project_b=project_b,
+    program_b=program_b,
+    function_inventory_a=inv_a or None,
+    function_inventory_b=inv_b or None,
+    output=output or None,
+)
+print(json.dumps(result, indent=2))
+PY

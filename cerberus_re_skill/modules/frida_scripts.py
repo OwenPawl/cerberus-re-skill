@@ -1,0 +1,702 @@
+"""Generate Frida scripts for ObjC tracing and heap scans."""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import Any
+
+from cerberus_re_skill.modules.frida_native_scripts import generate_frida_native_trace_script
+
+
+def generate_frida_trace_script(
+    symbols: str | list[str],
+    output: str | Path,
+    capture_returns: bool = False,
+) -> dict[str, Any]:
+    """Generate a Frida script that traces ObjC method implementations."""
+    parsed = [_parse_objc_symbol(symbol) for symbol in _split_symbols(symbols)]
+    targets = [target for target in parsed if target]
+    if not targets:
+        raise RuntimeError("no ObjC method symbols were parsed")
+    out_path = Path(output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(_render_trace_js(targets, capture_returns=capture_returns), encoding="utf-8")
+    return {
+        "ok": True,
+        "output": str(out_path),
+        "target_count": len(targets),
+        "capture_returns": capture_returns,
+        "targets": targets,
+    }
+
+
+def generate_frida_heap_scan_script(class_name: str, output: str | Path) -> dict[str, Any]:
+    """Generate a Frida script that enumerates live ObjC instances."""
+    if not class_name:
+        raise RuntimeError("class_name is required")
+    out_path = Path(output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(_render_heap_scan_js(class_name), encoding="utf-8")
+    return {
+        "ok": True,
+        "output": str(out_path),
+        "class_name": class_name,
+    }
+
+
+def generate_frida_selector_trace_script(
+    selectors: str | list[str],
+    output: str | Path,
+    *,
+    class_filters: str | list[str] | None = None,
+    exact_classes: str | list[str] | None = None,
+    max_hooks: int = 128,
+    capture_returns: bool = False,
+) -> dict[str, Any]:
+    """Generate a Frida script that traces selector implementations across ObjC classes."""
+    selector_list = [_normalize_selector(selector) for selector in _split_symbols(selectors)]
+    selector_list = [selector for selector in selector_list if selector]
+    if not selector_list:
+        raise RuntimeError("at least one selector is required")
+    filters = _split_optional_values(class_filters)
+    exact = _split_optional_values(exact_classes)
+    out_path = Path(output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
+        _render_selector_trace_js(
+            selector_list,
+            class_filters=filters,
+            exact_classes=exact,
+            max_hooks=max_hooks,
+            capture_returns=capture_returns,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "ok": True,
+        "output": str(out_path),
+        "selector_count": len(selector_list),
+        "selectors": selector_list,
+        "class_filters": filters,
+        "exact_classes": exact,
+        "max_hooks": max_hooks,
+        "capture_returns": capture_returns,
+    }
+
+
+def _split_symbols(symbols: str | list[str]) -> list[str]:
+    if isinstance(symbols, list):
+        return [str(symbol).strip() for symbol in symbols if str(symbol).strip()]
+    return [symbol.strip() for symbol in str(symbols).split(",") if symbol.strip()]
+
+
+def _split_optional_values(values: str | list[str] | None) -> list[str]:
+    if values is None:
+        return []
+    return _split_symbols(values)
+
+
+def _normalize_selector(selector: str) -> str:
+    value = str(selector or "").strip()
+    objc_match = _parse_objc_symbol(value)
+    if objc_match:
+        return objc_match["selector"]
+    if value.startswith("- "):
+        return value[2:].strip()
+    if value.startswith("+ "):
+        return value[2:].strip()
+    return value
+
+
+def _parse_objc_symbol(symbol: str) -> dict[str, str] | None:
+    match = re.match(r"^([+-])\[([^ \]]+)[ _]([^\]]+)\]$", symbol)
+    if not match:
+        return None
+    kind, class_name, selector = match.groups()
+    category_name = ""
+    runtime_class_name = class_name
+    category_match = re.match(r"^([^()]+)\(([^()]+)\)$", class_name)
+    if category_match:
+        runtime_class_name, category_name = category_match.groups()
+    runtime_symbol = f"{kind}[{runtime_class_name} {selector}]"
+    return {
+        "symbol": symbol,
+        "class_name": runtime_class_name,
+        "category_name": category_name,
+        "selector": selector,
+        "method_name": f"{kind} {selector}",
+        "runtime_symbol": runtime_symbol,
+        "selector_arg_count": selector.count(":"),
+    }
+
+
+def _render_selector_trace_js(
+    selectors: list[str],
+    *,
+    class_filters: list[str],
+    exact_classes: list[str],
+    max_hooks: int,
+    capture_returns: bool,
+) -> str:
+    selectors_json = json.dumps(selectors, indent=2)
+    filters_json = json.dumps(class_filters, indent=2)
+    exact_classes_json = json.dumps(exact_classes, indent=2)
+    capture = "true" if capture_returns else "false"
+    hook_limit = max(1, int(max_hooks))
+    return f"""// Generated by ghidra-re.
+// Run with: frida -n <process> -l <this-file> --runtime=v8
+
+const selectors = {selectors_json};
+const classFilters = {filters_json};
+const exactClasses = {exact_classes_json};
+const maxHooks = {hook_limit};
+const captureReturns = {capture};
+let hitIndex = 0;
+let installedCount = 0;
+const installedTargets = new Set();
+const installedImplementations = new Map();
+const implementationAliases = {{}};
+const selectorHookCounts = {{}};
+for (const selector of selectors) {{
+  selectorHookCounts[selector] = 0;
+}}
+
+function ptrString(value) {{
+  try {{
+    return value ? value.toString() : null;
+  }} catch (error) {{
+    return null;
+  }}
+}}
+
+function moduleInfoForAddress(address) {{
+  try {{
+    if (!address) return null;
+    const ptrValue = ptr(address);
+    const module = Process.findModuleByAddress(ptrValue);
+    if (!module) return null;
+    return {{
+      name: module.name,
+      path: module.path,
+      base: ptrString(module.base),
+      size: module.size,
+      offset: ptrString(ptrValue.sub(module.base))
+    }};
+  }} catch (error) {{
+    return null;
+  }}
+}}
+
+function applyRuntimeModule(hit, address) {{
+  const module = moduleInfoForAddress(address);
+  if (!module) return;
+  hit.module = module.name;
+  hit.module_name = module.name;
+  hit.module_path = module.path;
+  hit.module_base = module.base;
+  hit.module_offset = module.offset;
+  hit.runtime = hit.runtime || {{}};
+  hit.runtime.module = module;
+  hit.target = hit.target || {{}};
+  if (!hit.target.module) hit.target.module = module.name;
+}}
+
+function copyRuntimeModule(source, event) {{
+  if (!source || !source.runtime || !source.runtime.module) return;
+  const module = source.runtime.module;
+  event.module = source.module || module.name;
+  event.module_name = source.module_name || module.name;
+  event.module_path = source.module_path || module.path;
+  event.module_base = source.module_base || module.base;
+  event.module_offset = source.module_offset || module.offset;
+  event.runtime = event.runtime || {{}};
+  event.runtime.module = module;
+  event.target = event.target || {{}};
+  if (!event.target.module) event.target.module = module.name;
+}}
+
+function isLikelyObjCPointer(value) {{
+  try {{
+    if (!value || value.isNull()) return false;
+    if (value.compare(ptr("0x10000")) < 0) return false;
+    const text = value.toString().toLowerCase();
+    const last = text[text.length - 1];
+    if (last !== "0" && last !== "8") return false;
+    const range = Process.findRangeByAddress(value);
+    if (!range || range.protection.indexOf("r") === -1) return false;
+    return true;
+  }} catch (error) {{
+    return false;
+  }}
+}}
+
+function objcDescription(value) {{
+  try {{
+    if (!isLikelyObjCPointer(value)) return null;
+    return ObjC.Object(value).toString();
+  }} catch (error) {{
+    return null;
+  }}
+}}
+
+function shouldIncludeClass(className) {{
+  if (!classFilters || classFilters.length === 0) return true;
+  return classFilters.some((needle) => className.indexOf(needle) !== -1);
+}}
+
+function selectorArgCount(selector) {{
+  return (selector.match(/:/g) || []).length;
+}}
+
+function markSelectorCovered(selector) {{
+  selectorHookCounts[selector] = (selectorHookCounts[selector] || 0) + 1;
+}}
+
+function installImplementation(className, kind, selector) {{
+  const cls = ObjC.classes[className];
+  if (!cls) return false;
+  const methodName = kind + " " + selector;
+  const method = cls[methodName];
+  if (!method) return false;
+  const targetSymbol = kind + "[" + className + " " + selector + "]";
+  if (installedTargets.has(targetSymbol)) return true;
+  const implementationKey = ptrString(method.implementation);
+  const targetRecord = {{
+    symbol: targetSymbol,
+    selector: selector,
+    class_name: className,
+    method_name: methodName,
+    implementation: implementationKey
+  }};
+  if (implementationKey && installedImplementations.has(implementationKey)) {{
+    const primary = installedImplementations.get(implementationKey);
+    const aliases = implementationAliases[implementationKey] || [];
+    if (!aliases.some((alias) => alias.symbol === targetSymbol)) {{
+      aliases.push(targetRecord);
+      implementationAliases[implementationKey] = aliases;
+    }}
+    installedTargets.add(targetSymbol);
+    console.log("GHIDRA_FRIDA_SELECTOR_ALIAS " + JSON.stringify({{
+      symbol: targetSymbol,
+      selector: selector,
+      class_name: className,
+      method_name: methodName,
+      implementation: implementationKey,
+      primary_symbol: primary.symbol
+    }}));
+    markSelectorCovered(selector);
+    return true;
+  }}
+  if (installedCount >= maxHooks) {{
+    console.log("GHIDRA_FRIDA_SELECTOR_SKIPPED_LIMIT " + selector);
+    return false;
+  }}
+  if (implementationKey) {{
+    installedImplementations.set(implementationKey, targetRecord);
+    implementationAliases[implementationKey] = [targetRecord];
+  }}
+  const objcArgIndexes = [0];
+  const argCount = selectorArgCount(selector);
+  for (let i = 0; i < argCount; i++) {{
+    objcArgIndexes.push(i + 2);
+  }}
+  Interceptor.attach(method.implementation, {{
+    onEnter(args) {{
+      this.ghidraHit = {{
+        schema: "ghidra-re.runtime-hit.v1",
+        tool: "frida",
+        event_type: "objc-call",
+        hit_index: hitIndex++,
+        timestamp_ms: Date.now(),
+        symbol: targetSymbol,
+        selector: selector,
+        class_name: className,
+        method_name: methodName,
+        implementation: implementationKey,
+        selector_aliases: implementationKey ? (implementationAliases[implementationKey] || []).slice() : [],
+        selector_alias_count: implementationKey ? (implementationAliases[implementationKey] || []).length : 0,
+        target: {{
+          symbol: targetSymbol,
+          selector: selector,
+          class_name: className,
+          method_name: methodName,
+          implementation: implementationKey,
+          selector_aliases: implementationKey ? (implementationAliases[implementationKey] || []).slice() : [],
+          selector_alias_count: implementationKey ? (implementationAliases[implementationKey] || []).length : 0,
+          selector_wide: true
+        }},
+        process: {{
+          pid: Process.id,
+          arch: Process.arch,
+          platform: Process.platform
+        }},
+        runtime: {{
+          pc: ptrString(this.context.pc),
+          return_address: ptrString(this.returnAddress)
+        }},
+        pc: ptrString(this.context.pc),
+        return_address: ptrString(this.returnAddress),
+        args: {{}},
+        objc_args: {{}}
+      }};
+      applyRuntimeModule(this.ghidraHit, this.context.pc);
+      for (let i = 0; i < 8; i++) {{
+        this.ghidraHit.args["x" + i] = ptrString(args[i]);
+      }}
+      for (const i of objcArgIndexes) {{
+        this.ghidraHit.objc_args["x" + i] = objcDescription(args[i]);
+      }}
+      console.log("GHIDRA_FRIDA_HIT " + JSON.stringify(this.ghidraHit));
+    }},
+    onLeave(retval) {{
+      if (!captureReturns || !this.ghidraHit) return;
+      const event = {{
+        schema: "ghidra-re.runtime-hit.v1",
+        tool: "frida",
+        event_type: "objc-return",
+        hit_index: this.ghidraHit.hit_index,
+        symbol: targetSymbol,
+        selector: selector,
+        class_name: className,
+        method_name: methodName,
+        implementation: implementationKey,
+        selector_aliases: implementationKey ? (implementationAliases[implementationKey] || []).slice() : [],
+        selector_alias_count: implementationKey ? (implementationAliases[implementationKey] || []).length : 0,
+        target: {{
+          symbol: targetSymbol,
+          selector: selector,
+          class_name: className,
+          method_name: methodName,
+          implementation: implementationKey,
+          selector_aliases: implementationKey ? (implementationAliases[implementationKey] || []).slice() : [],
+          selector_alias_count: implementationKey ? (implementationAliases[implementationKey] || []).length : 0,
+          selector_wide: true
+        }},
+        process: {{
+          pid: Process.id,
+          arch: Process.arch,
+          platform: Process.platform
+        }},
+        runtime: {{
+          pc: ptrString(this.context.pc),
+          return_address: ptrString(this.returnAddress)
+        }},
+        return_value: ptrString(retval),
+        objc_return_value: objcDescription(retval)
+      }};
+      copyRuntimeModule(this.ghidraHit, event);
+      console.log("GHIDRA_FRIDA_RETURN " + JSON.stringify(event));
+    }}
+  }});
+  installedTargets.add(targetSymbol);
+  installedCount++;
+  markSelectorCovered(selector);
+  console.log("GHIDRA_FRIDA_SELECTOR_INSTALLED " + targetSymbol);
+  return true;
+}}
+
+function installClassSelectors(className) {{
+  for (const selector of selectors) {{
+    installImplementation(className, "-", selector);
+    installImplementation(className, "+", selector);
+  }}
+}}
+
+function installSelectors() {{
+  if (!ObjC.available) {{
+    console.log("GHIDRA_FRIDA_OBJC_UNAVAILABLE");
+    return;
+  }}
+  for (const className of exactClasses) {{
+    try {{
+      installClassSelectors(className);
+    }} catch (error) {{
+      console.log("GHIDRA_FRIDA_SELECTOR_CLASS_ERROR " + className + " " + error);
+    }}
+  }}
+  for (const className of classFilters) {{
+    try {{
+      if (ObjC.classes[className]) installClassSelectors(className);
+    }} catch (error) {{
+      console.log("GHIDRA_FRIDA_SELECTOR_CLASS_ERROR " + className + " " + error);
+    }}
+  }}
+  if (classFilters.length > 0 || exactClasses.length === 0) {{
+    try {{
+      for (const className of Object.keys(ObjC.classes)) {{
+        if (!shouldIncludeClass(className)) continue;
+        installClassSelectors(className);
+      }}
+    }} catch (error) {{
+      console.log("GHIDRA_FRIDA_SELECTOR_ENUM_ERROR " + error);
+    }}
+  }}
+  for (const selector of selectors) {{
+    if (!selectorHookCounts[selector]) {{
+      console.log("GHIDRA_FRIDA_SELECTOR_NO_MATCH " + selector);
+    }}
+  }}
+}}
+
+setImmediate(installSelectors);
+"""
+
+
+def _render_trace_js(targets: list[dict[str, str]], capture_returns: bool) -> str:
+    targets_json = json.dumps(targets, indent=2)
+    capture = "true" if capture_returns else "false"
+    return f"""// Generated by ghidra-re.
+// Run with: frida -n <process> -l <this-file> --runtime=v8
+
+const targets = {targets_json};
+const captureReturns = {capture};
+let hitIndex = 0;
+const pendingTargets = [];
+const installedTargets = new Set();
+
+function ptrString(value) {{
+  try {{
+    return value ? value.toString() : null;
+  }} catch (error) {{
+    return null;
+  }}
+}}
+
+function moduleInfoForAddress(address) {{
+  try {{
+    if (!address) return null;
+    const ptrValue = ptr(address);
+    const module = Process.findModuleByAddress(ptrValue);
+    if (!module) return null;
+    return {{
+      name: module.name,
+      path: module.path,
+      base: ptrString(module.base),
+      size: module.size,
+      offset: ptrString(ptrValue.sub(module.base))
+    }};
+  }} catch (error) {{
+    return null;
+  }}
+}}
+
+function applyRuntimeModule(hit, address) {{
+  const module = moduleInfoForAddress(address);
+  if (!module) return;
+  hit.module = module.name;
+  hit.module_name = module.name;
+  hit.module_path = module.path;
+  hit.module_base = module.base;
+  hit.module_offset = module.offset;
+  hit.runtime = hit.runtime || {{}};
+  hit.runtime.module = module;
+  hit.target = hit.target || {{}};
+  if (!hit.target.module) hit.target.module = module.name;
+}}
+
+function copyRuntimeModule(source, event) {{
+  if (!source || !source.runtime || !source.runtime.module) return;
+  const module = source.runtime.module;
+  event.module = source.module || module.name;
+  event.module_name = source.module_name || module.name;
+  event.module_path = source.module_path || module.path;
+  event.module_base = source.module_base || module.base;
+  event.module_offset = source.module_offset || module.offset;
+  event.runtime = event.runtime || {{}};
+  event.runtime.module = module;
+  event.target = event.target || {{}};
+  if (!event.target.module) event.target.module = module.name;
+}}
+
+function isLikelyObjCPointer(value) {{
+  try {{
+    if (!value || value.isNull()) return false;
+    if (value.compare(ptr("0x10000")) < 0) return false;
+    const text = value.toString().toLowerCase();
+    const last = text[text.length - 1];
+    if (last !== "0" && last !== "8") return false;
+    const range = Process.findRangeByAddress(value);
+    if (!range || range.protection.indexOf("r") === -1) return false;
+    return true;
+  }} catch (error) {{
+    return false;
+  }}
+}}
+
+function objcDescription(value) {{
+  try {{
+    if (!isLikelyObjCPointer(value)) return null;
+    return ObjC.Object(value).toString();
+  }} catch (error) {{
+    return null;
+  }}
+}}
+
+function installTarget(target) {{
+  if (installedTargets.has(target.symbol)) {{
+    return true;
+  }}
+  const cls = ObjC.classes[target.class_name];
+  if (!cls) {{
+    return false;
+  }}
+  const method = cls[target.method_name];
+  if (!method) {{
+    console.log("GHIDRA_FRIDA_MISSING_METHOD " + target.symbol);
+    return true;
+  }}
+  const objcArgIndexes = [0];
+  for (let i = 0; i < (target.selector_arg_count || 0); i++) {{
+    objcArgIndexes.push(i + 2);
+  }}
+  Interceptor.attach(method.implementation, {{
+    onEnter(args) {{
+      this.ghidraHit = {{
+        schema: "ghidra-re.runtime-hit.v1",
+        tool: "frida",
+        event_type: "objc-call",
+        hit_index: hitIndex++,
+        timestamp_ms: Date.now(),
+        symbol: target.symbol,
+        class_name: target.class_name,
+        method_name: target.method_name,
+        target: {{
+          symbol: target.symbol,
+          class_name: target.class_name,
+          method_name: target.method_name
+        }},
+        process: {{
+          pid: Process.id,
+          arch: Process.arch,
+          platform: Process.platform
+        }},
+        runtime: {{
+          pc: ptrString(this.context.pc),
+          return_address: ptrString(this.returnAddress)
+        }},
+        pc: ptrString(this.context.pc),
+        return_address: ptrString(this.returnAddress),
+        args: {{}},
+        objc_args: {{}}
+      }};
+      applyRuntimeModule(this.ghidraHit, this.context.pc);
+      for (let i = 0; i < 8; i++) {{
+        this.ghidraHit.args["x" + i] = ptrString(args[i]);
+      }}
+      for (const i of objcArgIndexes) {{
+        this.ghidraHit.objc_args["x" + i] = objcDescription(args[i]);
+      }}
+      console.log("GHIDRA_FRIDA_HIT " + JSON.stringify(this.ghidraHit));
+    }},
+    onLeave(retval) {{
+      if (!captureReturns || !this.ghidraHit) return;
+      const event = {{
+        schema: "ghidra-re.runtime-hit.v1",
+        tool: "frida",
+        event_type: "objc-return",
+        hit_index: this.ghidraHit.hit_index,
+        symbol: target.symbol,
+        target: {{
+          symbol: target.symbol,
+          class_name: target.class_name,
+          method_name: target.method_name
+        }},
+        process: {{
+          pid: Process.id,
+          arch: Process.arch,
+          platform: Process.platform
+        }},
+        return_value: ptrString(retval),
+        return_description: objcDescription(retval)
+      }};
+      copyRuntimeModule(this.ghidraHit, event);
+      console.log("GHIDRA_FRIDA_RETURN " + JSON.stringify(event));
+    }}
+  }});
+  installedTargets.add(target.symbol);
+  console.log("GHIDRA_FRIDA_INSTALLED " + target.symbol);
+  return true;
+}}
+
+function installOrDefer(target) {{
+  if (installTarget(target)) return;
+  pendingTargets.push(target);
+  console.log("GHIDRA_FRIDA_WAITING_CLASS " + target.class_name);
+}}
+
+function retryPendingTargets() {{
+  if (pendingTargets.length === 0) return;
+  let attempts = 0;
+  const timer = setInterval(function() {{
+    attempts++;
+    for (let i = pendingTargets.length - 1; i >= 0; i--) {{
+      if (installTarget(pendingTargets[i])) {{
+        pendingTargets.splice(i, 1);
+      }}
+    }}
+    if (pendingTargets.length === 0 || attempts >= 200) {{
+      for (const target of pendingTargets) {{
+        console.log("GHIDRA_FRIDA_MISSING_CLASS " + target.class_name);
+      }}
+      clearInterval(timer);
+    }}
+  }}, 25);
+}}
+
+if (!ObjC.available) {{
+  throw new Error("Objective-C runtime is not available in this process");
+}}
+
+for (const target of targets) {{
+  installOrDefer(target);
+}}
+
+retryPendingTargets();
+"""
+
+
+def _render_heap_scan_js(class_name: str) -> str:
+    escaped = json.dumps(class_name)
+    return f"""// Generated by ghidra-re.
+// Run with: frida -n <process> -l <this-file> --runtime=v8
+
+const className = {escaped};
+let count = 0;
+
+if (!ObjC.available) {{
+  throw new Error("Objective-C runtime is not available in this process");
+}}
+
+const cls = ObjC.classes[className];
+if (!cls) {{
+  throw new Error("Class not found: " + className);
+}}
+
+ObjC.choose(cls, {{
+  onMatch(obj) {{
+    count++;
+    const event = {{
+      schema: "ghidra-re.runtime-hit.v1",
+      tool: "frida",
+      event_type: "objc-heap-object",
+      class_name: className,
+      target: {{
+        class_name: className
+      }},
+      process: {{
+        pid: Process.id,
+        arch: Process.arch,
+        platform: Process.platform
+      }},
+      pointer: obj.handle.toString(),
+      description: obj.toString()
+    }};
+    console.log("GHIDRA_FRIDA_HEAP_OBJECT " + JSON.stringify(event));
+  }},
+  onComplete() {{
+    console.log("GHIDRA_FRIDA_HEAP_COMPLETE " + JSON.stringify({{ class_name: className, count }}));
+  }}
+}});
+"""

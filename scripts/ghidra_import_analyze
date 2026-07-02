@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+#
+# ghidra_import_analyze
+#
+# Import and analyze a binary with Ghidra headless.
+#
+# Usage:
+#   ghidra_import_analyze <binary_path> [project_name]
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/common.sh"
+
+usage() {
+  sed -n '3,9p' "$0"
+}
+
+[[ $# -ge 1 && $# -le 2 ]] || {
+  usage >&2
+  exit 1
+}
+
+binary_path="$1"
+project_name="${2:-}"
+
+ghidra_re_require_tools
+ghidra_re_export_env
+
+cmd=("$(ghidra_re_python)" -m cerberus_re_skill import analyze "$binary_path")
+if [[ -n "$project_name" ]]; then
+  cmd+=("$project_name")
+fi
+
+PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" "${cmd[@]}"

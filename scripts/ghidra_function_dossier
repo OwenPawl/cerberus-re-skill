@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+#
+# ghidra_function_dossier
+#
+# Export metadata, decompile output, and notes for one function.
+#
+# Usage:
+#   ghidra_function_dossier <project_name> <program_name> --function <name>
+#   ghidra_function_dossier <project_name> <program_name> --address <addr>
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m cerberus_re_skill export function-dossier "$@"

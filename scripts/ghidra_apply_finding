@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+#
+# ghidra_apply_finding
+#
+# Apply a finding back into an existing Ghidra project.
+#
+# Usage:
+#   ghidra_apply_finding <project_name> <program_name> <key=value args...>
+#
+# Required script args:
+#   title=<text> comment=<text> and one of address=<addr> or function=<name>
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/common.sh"
+
+usage() {
+  sed -n '3,12p' "$0"
+}
+
+[[ $# -ge 5 ]] || {
+  usage >&2
+  exit 1
+}
+
+project_name="$1"
+program_name="$2"
+shift 2
+
+ghidra_re_require_tools
+ghidra_re_export_env
+ghidra_re_require_project "$project_name"
+
+export_dir="$(ghidra_re_export_dir "$project_name" "$program_name")"
+findings_dir="$(ghidra_re_findings_dir "$project_name" "$program_name")"
+mkdir -p "$export_dir" "$findings_dir"
+
+script_args=()
+has_output=0
+while IFS= read -r -d '' arg; do
+  case "$arg" in
+    output=*) has_output=1 ;;
+  esac
+  script_args+=("$arg")
+done < <(ghidra_re_normalize_script_args "$@")
+
+if [[ "$has_output" -eq 0 ]]; then
+  script_args+=("output=$findings_dir/finding-$(ghidra_re_timestamp).json")
+fi
+
+headless="$(ghidra_re_analyze_headless_path "$GHIDRA_INSTALL_DIR")"
+project_location="$(ghidra_re_project_location "$project_name")"
+log_dir="$(ghidra_re_log_dir "$project_name")"
+timestamp="$(ghidra_re_timestamp)"
+log_file="$log_dir/apply-finding-${timestamp}.log"
+script_log="$log_dir/apply-finding-${timestamp}.script.log"
+script_path="$(ghidra_re_script_path)"
+mkdir -p "$log_dir"
+
+optional_args=()
+while IFS= read -r -d '' arg; do
+  optional_args+=("$arg")
+done < <(ghidra_re_optional_headless_args)
+
+cmd=(
+  "$headless"
+  "$project_location"
+  "$project_name"
+)
+if ! ghidra_re_flag_enabled "${GHIDRA_RUN_SCRIPT_ANALYSIS:-0}"; then
+  cmd+=("-noanalysis")
+fi
+cmd+=("-scriptPath" "$script_path" "-postScript" "ApplyFinding.java")
+if [[ ${#script_args[@]} -gt 0 ]]; then
+  cmd+=("${script_args[@]}")
+fi
+cmd+=("-process" "$program_name")
+if [[ ${#optional_args[@]} -gt 0 ]]; then
+  cmd+=("${optional_args[@]}")
+fi
+cmd+=("-log" "$log_file" "-scriptlog" "$script_log")
+
+lock_dir="$(ghidra_re_acquire_headless_lock "$project_name" "apply-finding")"
+trap 'ghidra_re_release_headless_lock "$lock_dir"' EXIT
+"${cmd[@]}"
+ghidra_re_release_headless_lock "$lock_dir"
+trap - EXIT
+
+printf '{\n'
+printf '  "ok": true,\n'
+printf '  "project_name": "%s",\n' "$project_name"
+printf '  "program_name": "%s",\n' "$program_name"
+printf '  "log": "%s",\n' "$log_file"
+printf '  "script_log": "%s"\n' "$script_log"
+printf '}\n'

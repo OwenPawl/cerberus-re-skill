@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/common.sh"
+
+[[ $# -ge 2 ]] || {
+  printf 'Usage: ghidra_swift_surface_report <project_name> <program_name> [query] [format=json|markdown]\n' >&2
+  exit 1
+}
+
+project="$1"
+program="$2"
+query="${3:-}"
+format="${4:-json}"
+export_dir="$(ghidra_re_export_dir "$project" "$program")"
+
+PYTHONPATH="$GHIDRA_RE_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 \
+  "$GHIDRA_RE_ROOT/scripts/ghidra_swift_surface_backend.py" \
+  report \
+  "$export_dir/swift_metadata.json" \
+  "$export_dir/objc_metadata.json" \
+  "$export_dir/symbols.json" \
+  "$export_dir/strings.json" \
+  "$query" \
+  "$format"

@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+#
+# ghidra_frida_heap_scan
+#
+# Generate and optionally run a Frida ObjC heap enumeration script.
+#
+# Usage:
+#   ghidra_frida_heap_scan <class_name> [key=value ...]
+#
+# Key=value arguments:
+#   process=<name>              Process name for frida -n.
+#   script_output=<path>        Destination .js path.
+#   output=<path>               Destination Frida stdout log when running.
+#   dry_run=true                Generate the JS and print metadata without running Frida.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+usage() {
+  sed -n '3,15p' "$0"
+}
+
+[[ $# -ge 1 ]] || {
+  usage >&2
+  exit 1
+}
+
+class_name="$1"
+shift
+
+process=""
+script_output=""
+output=""
+dry_run="false"
+
+for arg in "$@"; do
+  case "$arg" in
+    process=*)       process="${arg#process=}" ;;
+    script_output=*) script_output="${arg#script_output=}" ;;
+    output=*)        output="${arg#output=}" ;;
+    dry_run=*)       dry_run="${arg#dry_run=}" ;;
+    *) printf 'cerberus-re: warning: unknown argument: %s\n' "$arg" >&2 ;;
+  esac
+done
+
+if [[ -z "$script_output" ]]; then
+  script_output="/tmp/ghidra_frida_heap_${class_name}.js"
+fi
+
+PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 - "$class_name" "$script_output" <<'PY'
+import json
+import sys
+
+from cerberus_re_skill.modules.frida_scripts import generate_frida_heap_scan_script
+
+class_name, script_output = sys.argv[1:3]
+result = generate_frida_heap_scan_script(
+    class_name=class_name,
+    output=script_output,
+)
+print(json.dumps(result, indent=2))
+PY
+
+if [[ "$dry_run" == "true" ]]; then
+  exit 0
+fi
+
+frida_bin="${GHIDRA_RE_FRIDA_BIN:-}"
+if [[ -z "$frida_bin" && -n "${GHIDRA_RE_FRIDA_VENV:-}" && -x "${GHIDRA_RE_FRIDA_VENV}/bin/frida" ]]; then
+  frida_bin="${GHIDRA_RE_FRIDA_VENV}/bin/frida"
+elif [[ -z "$frida_bin" && -x "/opt/cerberus-re/frida-venv/bin/frida" ]]; then
+  frida_bin="/opt/cerberus-re/frida-venv/bin/frida"
+elif [[ -z "$frida_bin" ]]; then
+  frida_bin="$(command -v frida || true)"
+fi
+[[ -n "$frida_bin" && -x "$frida_bin" ]] || {
+  printf 'cerberus-re: frida CLI not found; generated script only: %s\n' "$script_output" >&2
+  exit 2
+}
+[[ -n "$process" ]] || {
+  printf 'cerberus-re: process=<name> is required when dry_run=false\n' >&2
+  exit 1
+}
+
+frida_cmd=("$frida_bin")
+case "${GHIDRA_RE_FRIDA_SUDO:-auto}" in
+  0|false|False|no|No|off|Off) ;;
+  *) [[ "$frida_bin" == "${GHIDRA_RE_FRIDA_VENV:-/opt/cerberus-re/frida-venv}"/bin/frida ]] && frida_cmd=(sudo -n "$frida_bin") ;;
+esac
+
+if [[ -n "$output" ]]; then
+  "${frida_cmd[@]}" -n "$process" -l "$script_output" --runtime=v8 | tee "$output"
+else
+  "${frida_cmd[@]}" -n "$process" -l "$script_output" --runtime=v8
+fi

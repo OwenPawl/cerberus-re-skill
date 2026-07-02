@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+#
+# ghidra_lldb_symbols
+#
+# Uses LLDB's Python API to extract a rich symbol inventory from a Mach-O
+# binary without attaching to a process.  Supplements Ghidra's static analysis
+# with the ObjC runtime symbol table, trampoline stubs, outlined-function
+# addresses, and data symbols that may not all appear in Ghidra's exports.
+#
+# The output JSON sidecar (lldb_symbols.json) is placed next to the program's
+# Ghidra export bundle and is consumed by other skill tools for cross-referencing
+# and gap-filling.
+#
+# Unlike most skill scripts this one does NOT need a Ghidra project — it
+# operates entirely on the binary file.
+#
+# Requirements:
+#   • Xcode installed (provides LLDB and its Python framework)
+#   • python3
+#
+# Usage:
+#   ghidra_lldb_symbols <binary_path> [<project_name> <program_name>]
+#   ghidra_lldb_symbols <project_name> <program_name>
+#
+# Output:
+#   <exports>/<project_name>/<program_name>/lldb_symbols.json
+#
+# JSON schema:
+#   {
+#     "binary": "<name>",
+#     "binary_path": "<path>",
+#     "lldb_version": "<string>",
+#     "extraction_time_s": <float>,
+#     "counts": { "objc_methods": N, "trampolines": N, ... },
+#     "objc_methods":  [{ "name": "...", "address": "0x...", "size": N }],
+#     "trampolines":   [{ "name": "...", "address": "0x...", "size": N }],
+#     "outlined":      [{ "name": "...", "address": "0x...", "size": N }],
+#     "swift":         [{ "name": "...", "address": "0x...", "size": N }],
+#     "objc_classes":  [{ "name": "...", "address": "0x..." }],
+#     "data":          [{ "name": "...", "address": "0x...", "size": N }],
+#     "other_code":    [{ "name": "...", "address": "0x...", "size": N }]
+#   }
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/common.sh"
+
+usage() {
+  sed -n '3,58p' "$0"
+}
+
+binary_path=""
+project_name=""
+program_name=""
+
+if [[ $# -eq 3 ]]; then
+  binary_path="$1"
+  project_name="$2"
+  program_name="$3"
+elif [[ $# -eq 2 ]]; then
+  project_name="$1"
+  program_name="$2"
+  # Try to find binary in registered sources
+  binary_path="$(find "${GHIDRA_SOURCES_CACHE_DIR:-$HOME/ghidra-projects/sources}" -name "$program_name" -type f 2>/dev/null | head -1 || true)"
+elif [[ $# -eq 1 ]]; then
+  binary_path="$1"
+  program_name="$(basename "$binary_path")"
+  project_name="$program_name"
+else
+  usage >&2
+  exit 1
+fi
+
+missing_binary_message() {
+  local path="$1"
+  if [[ "$path" == /System/Library/* && "$path" == *".framework/"* ]]; then
+    printf "binary not found: '%s' — this may be a dyld-cache stub framework path; pass the extracted dyld-cache Mach-O for --binary or register that extracted source" "$path"
+  else
+    printf "binary not found: '%s' — pass the full path or ensure sources are registered" "$path"
+  fi
+}
+
+ghidra_re_export_env
+
+[[ -n "$binary_path" && -f "$binary_path" ]] || \
+  ghidra_re_die "$(missing_binary_message "$binary_path")"
+
+export_dir="$(ghidra_re_export_dir "$project_name" "$program_name")"
+output_file="$export_dir/lldb_symbols.json"
+mkdir -p "$export_dir"
+
+# Locate LLDB Python framework
+lldb_py="$(lldb --python-path 2>/dev/null)" || \
+  ghidra_re_die "lldb not found — install Xcode"
+lldb_python=(python3)
+if ghidra_re_platform_is_macos && command -v xcrun >/dev/null 2>&1; then
+  if xcrun python3 - "$lldb_py" >/dev/null 2>&1 <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import lldb
+PY
+  then
+    lldb_python=(xcrun python3)
+  fi
+fi
+
+printf 'ghidra-re: extracting symbols via LLDB for %s\n' "$(basename "$binary_path")"
+printf '  LLDB: %s\n' "$(lldb --version 2>&1 | head -1)"
+printf '  Binary: %s\n' "$binary_path"
+
+result=$("${lldb_python[@]}" - "$binary_path" "$lldb_py" "$output_file" "$SCRIPT_DIR/.." <<'PY'
+import sys, json, time, os
+
+binary_path = sys.argv[1]
+lldb_py     = sys.argv[2]
+output_file = sys.argv[3]
+skill_root  = sys.argv[4]
+
+sys.path.insert(0, skill_root)
+sys.path.insert(0, lldb_py)
+import lldb
+from cerberus_re_skill.core.utils import write_json_atomic
+
+dbg = lldb.SBDebugger.Create()
+dbg.SetAsync(False)
+
+# Redirect LLDB's own output to stderr so it doesn't pollute our JSON stdout
+import io
+dbg.SetOutputFileHandle(sys.stderr, False)
+dbg.SetErrorFileHandle(sys.stderr, False)
+
+ci  = dbg.GetCommandInterpreter()
+res = lldb.SBCommandReturnObject()
+
+ci.HandleCommand(f'target create "{binary_path}"', res)
+if res.GetError().strip():
+    print(json.dumps({"ok": False, "error": res.GetError().strip()}))
+    sys.exit(1)
+
+t = dbg.GetSelectedTarget()
+if not t.IsValid():
+    print(json.dumps({"ok": False, "error": "target not valid after create"}))
+    sys.exit(1)
+
+mod = t.GetModuleAtIndex(0)
+if not mod.IsValid():
+    print(json.dumps({"ok": False, "error": "no module loaded"}))
+    sys.exit(1)
+
+start = time.time()
+
+buckets = {
+    "objc_methods":  [],
+    "objc_classes":  [],
+    "trampolines":   [],
+    "outlined":      [],
+    "swift":         [],
+    "data":          [],
+    "other_code":    [],
+}
+
+for i in range(mod.GetNumSymbols()):
+    s  = mod.GetSymbolAtIndex(i)
+    st = s.GetType()
+    name = s.GetName() or ""
+    sa = s.GetStartAddress()
+    ea = s.GetEndAddress()
+    addr = sa.GetFileAddress() if sa.IsValid() else 0
+    size = (ea.GetFileAddress() - addr) if (ea.IsValid() and addr) else 0
+
+    if st == lldb.eSymbolTypeCode:
+        if name.startswith("-[") or name.startswith("+["):
+            buckets["objc_methods"].append(
+                {"name": name, "address": hex(addr), "size": size})
+        elif "OUTLINED_FUNCTION" in name:
+            buckets["outlined"].append(
+                {"name": name, "address": hex(addr), "size": size})
+        elif name.startswith("_$s") or name.startswith("$s"):
+            buckets["swift"].append(
+                {"name": name, "address": hex(addr), "size": size})
+        else:
+            buckets["other_code"].append(
+                {"name": name, "address": hex(addr), "size": size})
+
+    elif st == lldb.eSymbolTypeTrampoline:
+        buckets["trampolines"].append(
+            {"name": name, "address": hex(addr), "size": size})
+
+    elif st == lldb.eSymbolTypeObjCClass:
+        buckets["objc_classes"].append(
+            {"name": name, "address": hex(addr)})
+
+    elif st == lldb.eSymbolTypeData:
+        buckets["data"].append(
+            {"name": name, "address": hex(addr), "size": size})
+
+elapsed = time.time() - start
+
+counts = {k: len(v) for k, v in buckets.items()}
+total  = sum(counts.values())
+
+output = {
+    "ok":                True,
+    "binary":            os.path.basename(binary_path),
+    "binary_path":       binary_path,
+    "lldb_version":      lldb.SBDebugger.GetVersionString(),
+    "extraction_time_s": round(elapsed, 3),
+    "total_symbols":     total,
+    "counts":            counts,
+}
+output.update(buckets)
+
+write_json_atomic(output_file, output, indent=2, ensure_ascii=False)
+
+print(json.dumps({"ok": True, "total": total, "counts": counts,
+                  "elapsed": round(elapsed, 3), "output_file": output_file}))
+
+lldb.SBDebugger.Destroy(dbg)
+PY
+)
+
+ok=$(printf '%s' "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('ok', False))" 2>/dev/null || echo "False")
+if [[ "$ok" != "True" ]]; then
+  err=$(printf '%s' "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('error','unknown'))" 2>/dev/null || echo "unknown")
+  ghidra_re_die "LLDB symbol extraction failed: $err"
+fi
+
+python3 - "$output_file" <<'PY' || ghidra_re_die "LLDB symbol extraction wrote invalid JSON: $output_file"
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    json.load(handle)
+PY
+
+printf '%s' "$result" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+c = d['counts']
+print(f\"\nLLDB symbol extraction complete ({d['elapsed']}s)\")
+print(f\"  ObjC methods:    {c['objc_methods']:6d}\")
+print(f\"  ObjC classes:    {c['objc_classes']:6d}\")
+print(f\"  Trampolines:     {c['trampolines']:6d}\")
+print(f\"  OUTLINED stubs:  {c['outlined']:6d}\")
+print(f\"  Swift symbols:   {c['swift']:6d}\")
+print(f\"  Data symbols:    {c['data']:6d}\")
+print(f\"  Other code:      {c['other_code']:6d}\")
+print(f\"  Total:           {d['total']:6d}\")
+print(f\"\n  Output: {d['output_file']}\")
+"
+
+echo "$output_file"

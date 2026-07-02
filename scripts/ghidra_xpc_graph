@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+#
+# ghidra_xpc_graph
+#
+# Merge per-binary XPC surface reports into a coarse IPC graph.
+#
+# Usage:
+#   ghidra_xpc_graph <project:program> [project:program ...] [key=value ...]
+#
+# Key=value arguments:
+#   output=<path>             Override xpc_graph.json output path.
+#   markdown_output=<path>    Override xpc_graph.md output path.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+usage() {
+  sed -n '3,14p' "$0"
+}
+
+[[ $# -ge 1 ]] || {
+  usage >&2
+  exit 1
+}
+
+targets=()
+output=""
+markdown_output=""
+
+for arg in "$@"; do
+  case "$arg" in
+    output=*)          output="${arg#output=}" ;;
+    markdown_output=*) markdown_output="${arg#markdown_output=}" ;;
+    *=*)               printf 'ghidra-re: warning: unknown argument: %s\n' "$arg" >&2 ;;
+    *)                 targets+=("$arg") ;;
+  esac
+done
+
+[[ ${#targets[@]} -ge 1 ]] || {
+  usage >&2
+  exit 1
+}
+
+PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 - "$output" "$markdown_output" "${targets[@]}" <<'PY'
+import json
+import sys
+
+from cerberus_re_skill.modules.xpc_graph import build_xpc_graph
+
+output = sys.argv[1] or None
+markdown_output = sys.argv[2] or None
+targets = sys.argv[3:]
+
+result = build_xpc_graph(
+    targets=targets,
+    output=output,
+    markdown_output=markdown_output,
+)
+print(json.dumps(result, indent=2))
+PY

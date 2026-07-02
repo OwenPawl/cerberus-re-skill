@@ -1,0 +1,385 @@
+{
+  "entrypoint_categories": [
+    {
+      "id": "xpc-mach-service-handler",
+      "label": "XPC / Mach service handler",
+      "function_name_terms": [
+        "xpc",
+        "mach",
+        "listener",
+        "connection",
+        "incoming",
+        "message",
+        "handler",
+        "service"
+      ],
+      "namespace_terms": [
+        "xpc",
+        "mach",
+        "service"
+      ],
+      "import_terms": [
+        "_xpc_",
+        "nsxpc",
+        "xpc_connection",
+        "xpc_dictionary",
+        "dispatch_mach",
+        "bootstrap_check_in",
+        "mach_msg"
+      ],
+      "symbol_terms": [
+        "xpc",
+        "mach",
+        "listener",
+        "service"
+      ],
+      "string_terms": [
+        "xpc",
+        "mach service",
+        "com.apple."
+      ],
+      "selector_terms": [
+        "listener:shouldacceptnewconnection:",
+        "handlexpc",
+        "handlemessage",
+        "incomingmessage",
+        "serviceconnection"
+      ],
+      "score_bonus": 20
+    },
+    {
+      "id": "url-command-notification-handler",
+      "label": "URL / command / notification handler",
+      "function_name_terms": [
+        "url",
+        "command",
+        "notification",
+        "notify",
+        "event",
+        "handle"
+      ],
+      "namespace_terms": [
+        "url",
+        "command",
+        "notification"
+      ],
+      "import_terms": [
+        "cfnotification",
+        "_notify_",
+        "openurl",
+        "nsworkspace",
+        "unusernotification",
+        "nsusernotification"
+      ],
+      "symbol_terms": [
+        "url",
+        "command",
+        "notification"
+      ],
+      "string_terms": [
+        "openurl",
+        "notification",
+        "command"
+      ],
+      "selector_terms": [
+        "openurl:",
+        "handleurl:",
+        "handlecommand:",
+        "notificationcenter:"
+      ],
+      "score_bonus": 15
+    },
+    {
+      "id": "serialization-or-parse-entrypoint",
+      "label": "Serialization / parse entrypoint",
+      "function_name_terms": [
+        "decode",
+        "deserialize",
+        "unarchive",
+        "archive",
+        "parse",
+        "parser",
+        "json",
+        "plist",
+        "coder"
+      ],
+      "namespace_terms": [
+        "decode",
+        "parse",
+        "serialization",
+        "archive"
+      ],
+      "import_terms": [
+        "nskeyedunarchiver",
+        "nsjsonserialization",
+        "propertylistserialization",
+        "decodeobjectforkey",
+        "initwithcoder",
+        "cfpropertylist"
+      ],
+      "symbol_terms": [
+        "decode",
+        "parse",
+        "json",
+        "plist",
+        "coder"
+      ],
+      "string_terms": [
+        "json",
+        "plist",
+        "decode",
+        "archive",
+        "unarchive"
+      ],
+      "selector_terms": [
+        "decodeobjectforkey:",
+        "decodetoplevelobjectforkey:error:",
+        "initwithcoder:",
+        "jsonobjectwithdata:options:error:"
+      ],
+      "score_bonus": 10
+    },
+    {
+      "id": "framework-exported-api",
+      "label": "Framework exported API",
+      "function_name_terms": [
+        "create",
+        "copy",
+        "open",
+        "load",
+        "run",
+        "perform",
+        "handle",
+        "execute"
+      ],
+      "namespace_terms": [
+        "api",
+        "client",
+        "framework"
+      ],
+      "import_terms": [],
+      "symbol_terms": [],
+      "string_terms": [],
+      "selector_terms": [],
+      "exported_only": true,
+      "score_bonus": 25
+    }
+  ],
+  "sink_categories": [
+    {
+      "id": "memory-or-string-operations",
+      "label": "Memory / string operations",
+      "function_name_terms": [
+        "copy",
+        "append",
+        "buffer",
+        "bytes",
+        "format"
+      ],
+      "namespace_terms": [
+        "buffer",
+        "string"
+      ],
+      "import_terms": [
+        "_memcpy",
+        "_memmove",
+        "_strcpy",
+        "_strncpy",
+        "_strlcpy",
+        "_strcat",
+        "_strncat",
+        "_snprintf",
+        "_vsnprintf",
+        "_malloc",
+        "_calloc",
+        "_realloc",
+        "_bcopy"
+      ],
+      "symbol_terms": [
+        "copy",
+        "buffer"
+      ],
+      "string_terms": [
+        "buffer",
+        "bytes"
+      ],
+      "selector_terms": [
+        "appendstring:",
+        "appenddata:",
+        "setbytes:length:"
+      ],
+      "score_bonus": 10
+    },
+    {
+      "id": "filesystem-or-process-spawn",
+      "label": "Filesystem / process spawn",
+      "function_name_terms": [
+        "write",
+        "save",
+        "delete",
+        "spawn",
+        "launch",
+        "execute",
+        "openfile"
+      ],
+      "namespace_terms": [
+        "file",
+        "process",
+        "task"
+      ],
+      "import_terms": [
+        "_open",
+        "_fopen",
+        "_read",
+        "_write",
+        "_unlink",
+        "_remove",
+        "_rename",
+        "_mkdir",
+        "_rmdir",
+        "_stat",
+        "_lstat",
+        "_access",
+        "_chmod",
+        "_copyfile",
+        "_posix_spawn",
+        "_execve",
+        "_system",
+        "nstask"
+      ],
+      "symbol_terms": [
+        "file",
+        "spawn",
+        "task"
+      ],
+      "string_terms": [
+        "/tmp/",
+        "/var/",
+        "/private/",
+        "/library/"
+      ],
+      "selector_terms": [
+        "writetourl:atomically:",
+        "removeitematpath:error:",
+        "launchandreturnerror:"
+      ],
+      "score_bonus": 15
+    },
+    {
+      "id": "deserialization-or-parser-sink",
+      "label": "Deserialization / parser sink",
+      "function_name_terms": [
+        "decode",
+        "parse",
+        "deserialize",
+        "unarchive",
+        "archive",
+        "json",
+        "plist",
+        "protobuf",
+        "proto"
+      ],
+      "namespace_terms": [
+        "decode",
+        "parse",
+        "serialization",
+        "archive"
+      ],
+      "import_terms": [
+        "nskeyedunarchiver",
+        "nsjsonserialization",
+        "propertylistserialization",
+        "decodeobjectforkey",
+        "decodetoplevelobjectforkey",
+        "_xpc_dictionary_get_",
+        "_xpc_array_get_",
+        "cfpropertylist"
+      ],
+      "symbol_terms": [
+        "decode",
+        "parse",
+        "archive"
+      ],
+      "string_terms": [
+        "json",
+        "plist",
+        "archive",
+        "unarchive",
+        "decode"
+      ],
+      "selector_terms": [
+        "decodeobjectforkey:",
+        "decodetoplevelobjectforkey:error:",
+        "initwithcoder:",
+        "jsonobjectwithdata:options:error:"
+      ],
+      "score_bonus": 20
+    },
+    {
+      "id": "security-authorization-sandbox",
+      "label": "Security / authorization / sandbox decision point",
+      "function_name_terms": [
+        "authorize",
+        "authorization",
+        "entitlement",
+        "sandbox",
+        "security",
+        "audit",
+        "trust",
+        "permission",
+        "policy",
+        "validate"
+      ],
+      "namespace_terms": [
+        "security",
+        "sandbox",
+        "authorization",
+        "tcc"
+      ],
+      "import_terms": [
+        "authorization",
+        "sectask",
+        "seccode",
+        "_sandbox_",
+        "_xpc_connection_get_audit_token",
+        "_audit_token",
+        "_csops",
+        "tcc"
+      ],
+      "symbol_terms": [
+        "entitlement",
+        "sandbox",
+        "audit",
+        "security"
+      ],
+      "string_terms": [
+        "entitlement",
+        "sandbox",
+        "authorization",
+        "audit token",
+        "com.apple.private"
+      ],
+      "selector_terms": [
+        "audittoken",
+        "valueforentitlement:",
+        "hasentitlement:",
+        "authorizationstatus"
+      ],
+      "score_bonus": 20
+    }
+  ],
+  "parser_terms": [
+    "decode",
+    "parse",
+    "parser",
+    "json",
+    "plist",
+    "archive",
+    "unarchive",
+    "deserialize",
+    "xpc_dictionary",
+    "xpc_array",
+    "coder",
+    "message"
+  ]
+}

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+#
+# ghidra_generate_xpc_harness
+#
+# Generate an Objective-C NSXPCConnection harness skeleton from xpc_surface.json.
+#
+# Usage:
+#   ghidra_generate_xpc_harness <project_name> <program_name> [key=value ...]
+#
+# Key=value arguments:
+#   service=<mach-service>      Override service name.
+#   protocol=<ProtocolName>     Override remoteObjectInterface protocol.
+#   xpc_surface=<path>          Override xpc_surface.json path.
+#   output=<path>               Destination .m file.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+usage() {
+  sed -n '3,16p' "$0"
+}
+
+[[ $# -ge 2 ]] || {
+  usage >&2
+  exit 1
+}
+
+project="$1"
+program="$2"
+shift 2
+
+service=""
+protocol=""
+xpc_surface=""
+output=""
+
+for arg in "$@"; do
+  case "$arg" in
+    service=*)     service="${arg#service=}" ;;
+    protocol=*)    protocol="${arg#protocol=}" ;;
+    xpc_surface=*) xpc_surface="${arg#xpc_surface=}" ;;
+    output=*)      output="${arg#output=}" ;;
+    *) printf 'ghidra-re: warning: unknown argument: %s\n' "$arg" >&2 ;;
+  esac
+done
+
+PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 - "$project" "$program" \
+  "$service" "$protocol" "$xpc_surface" "$output" <<'PY'
+import json
+import sys
+
+from cerberus_re_skill.modules.xpc_harness import generate_xpc_harness
+
+project, program, service, protocol, xpc_surface, output = sys.argv[1:7]
+result = generate_xpc_harness(
+    project=project,
+    program=program,
+    service=service or None,
+    protocol=protocol or None,
+    xpc_surface_path=xpc_surface or None,
+    output=output or None,
+)
+print(json.dumps(result, indent=2))
+PY

@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+#
+# ghidra_build_isa_map
+#
+# Builds a JSON sidecar mapping Objective-C class and metaclass object
+# addresses to runtime names. The map is intended for LLDB trace post-processing
+# and breakpoint handlers that capture `isa` pointers from x0/self.
+#
+# Inputs:
+#   - objc_metadata.json (for recovered class-name context)
+#   - symbols.json       (for concrete _OBJC_CLASS_$_ / _OBJC_METACLASS_$_
+#                         addresses exported by Ghidra)
+#
+# Usage:
+#   ghidra_build_isa_map <project_name> <program_name>
+#
+# Output:
+#   <exports>/<project_name>/<program_name>/isa_map.json
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/common.sh"
+
+usage() {
+  sed -n '3,25p' "$0"
+}
+
+[[ $# -eq 2 ]] || {
+  usage >&2
+  exit 1
+}
+
+project_name="$1"
+program_name="$2"
+
+ghidra_re_require_tools
+ghidra_re_export_env
+
+export_dir="$(ghidra_re_export_dir "$project_name" "$program_name")"
+objc_json="$export_dir/objc_metadata.json"
+symbols_json="$export_dir/symbols.json"
+output_file="$export_dir/isa_map.json"
+mkdir -p "$export_dir"
+
+if [[ ! -f "$objc_json" || ! -f "$symbols_json" ]]; then
+  "$SCRIPT_DIR/ghidra_export_apple_bundle" "$project_name" "$program_name" >/dev/null
+fi
+
+[[ -f "$objc_json" ]] || ghidra_re_die "missing objc metadata: $objc_json"
+[[ -f "$symbols_json" ]] || ghidra_re_die "missing symbols export: $symbols_json"
+
+printf 'ghidra-re: building isa map for %s/%s\n' "$project_name" "$program_name"
+
+"$(ghidra_re_python)" - "$objc_json" "$symbols_json" "$output_file" "$project_name" "$program_name" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+
+OBJC_CLASS_PREFIX = "_OBJC_CLASS_$_"
+OBJC_METACLASS_PREFIX = "_OBJC_METACLASS_$_"
+
+
+def load_json(path_str):
+    path = Path(path_str)
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise SystemExit(f"missing required file: {path}")
+
+
+def normalize_addr(value):
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text or text.startswith("EXTERNAL:"):
+        return None
+    if text.lower().startswith("0x"):
+        text = text[2:]
+    try:
+        return f"0x{int(text, 16):x}"
+    except ValueError:
+        return None
+
+
+def collect_known_classes(objc_payload):
+    names = set()
+    for item in objc_payload.get("class_names", []):
+        value = item.get("value")
+        if isinstance(value, str) and value:
+            names.add(value)
+    for key in ("classes", "metaclasses"):
+        for item in objc_payload.get(key, []):
+            if isinstance(item, str) and item:
+                names.add(item)
+    return names
+
+
+def symbol_kind_and_name(symbol_name):
+    if symbol_name.startswith(OBJC_CLASS_PREFIX):
+        return "class", symbol_name[len(OBJC_CLASS_PREFIX):]
+    if symbol_name.startswith(OBJC_METACLASS_PREFIX):
+        return "metaclass", symbol_name[len(OBJC_METACLASS_PREFIX):]
+    return None, None
+
+
+objc_json, symbols_json, output_file, project_name, program_name = sys.argv[1:6]
+objc_payload = load_json(objc_json)
+symbols_payload = load_json(symbols_json)
+
+known_classes = collect_known_classes(objc_payload)
+entries = {}
+duplicate_addrs = {}
+stats = {
+    "total_symbols_seen": 0,
+    "usable_symbols_seen": 0,
+    "external_symbols_skipped": 0,
+    "duplicate_addresses": 0,
+    "unknown_to_objc_metadata": 0,
+    "class_count": 0,
+    "metaclass_count": 0,
+}
+
+for bucket_name in ("symbols", "exports"):
+    for item in symbols_payload.get(bucket_name, []):
+        stats["total_symbols_seen"] += 1
+        symbol_name = item.get("name") or ""
+        kind, class_name = symbol_kind_and_name(symbol_name)
+        if not kind or not class_name:
+            continue
+        addr = normalize_addr(item.get("address"))
+        if addr is None:
+            stats["external_symbols_skipped"] += 1
+            continue
+        entry = {
+            "name": class_name,
+            "kind": kind,
+            "symbol": symbol_name,
+            "address": addr,
+            "source_bucket": bucket_name,
+            "source": item.get("source"),
+            "external": bool(item.get("external")),
+            "in_objc_metadata": class_name in known_classes,
+        }
+        previous = entries.get(addr)
+        if previous and previous["name"] != class_name:
+            stats["duplicate_addresses"] += 1
+            duplicate_addrs.setdefault(addr, []).append(previous)
+            duplicate_addrs[addr].append(entry)
+            continue
+        if addr in entries:
+            continue
+        entries[addr] = entry
+        stats["usable_symbols_seen"] += 1
+        if not entry["in_objc_metadata"]:
+            stats["unknown_to_objc_metadata"] += 1
+        if kind == "class":
+            stats["class_count"] += 1
+        else:
+            stats["metaclass_count"] += 1
+
+output = {
+    "project_name": project_name,
+    "program_name": program_name,
+    "objc_metadata": str(Path(objc_json)),
+    "symbols_json": str(Path(symbols_json)),
+    "stats": stats,
+    "entries": entries,
+}
+if duplicate_addrs:
+    output["duplicates"] = duplicate_addrs
+
+Path(output_file).write_text(json.dumps(output, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+print(json.dumps({
+    "ok": True,
+    "output": output_file,
+    "entries": len(entries),
+    "classes": stats["class_count"],
+    "metaclasses": stats["metaclass_count"],
+    "unknown_to_objc_metadata": stats["unknown_to_objc_metadata"],
+    "duplicates": stats["duplicate_addresses"],
+}, indent=2))
+PY

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/common.sh"
+
+[[ $# -ge 3 ]] || {
+  printf 'Usage: ghidra_describe_selector <project_name> <program_name> <selector> [format=json]\n' >&2
+  exit 1
+}
+
+project="$1"
+program="$2"
+selector="$3"
+format="${4:-json}"
+export_dir="$(ghidra_re_export_dir "$project" "$program")"
+
+PYTHONPATH="$GHIDRA_RE_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 \
+  "$GHIDRA_RE_ROOT/scripts/ghidra_objc_surface_backend.py" \
+  --mode selector \
+  --export-dir "$export_dir" \
+  --query "$selector" \
+  --format "$format"

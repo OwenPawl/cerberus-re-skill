@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Copy a Mach-O binary and ad-hoc re-sign without hardened runtime,
+# so that Frida injection works on this AMFI-disabled host.
+set -euo pipefail
+
+src="${1:?usage: strip_hardened_runtime <src> [dst]}"
+dst="${2:-/tmp/analysis/$(basename "$src")}"
+mkdir -p "$(dirname "$dst")"
+cp -f "$src" "$dst"
+codesign --remove-signature "$dst" 2>/dev/null || true
+codesign -s - --force "$dst"
+echo "$dst"

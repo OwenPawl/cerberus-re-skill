@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+#
+# ghidra_xpc_surface
+#
+# Recover XPC surface hints from existing export bundle JSON files.
+#
+# Usage:
+#   ghidra_xpc_surface <project_name> <program_name> [key=value ...]
+#
+# Key=value arguments:
+#   objc_metadata=<path>      Override objc_metadata.json.
+#   strings=<path>            Override strings.json.
+#   symbols=<path>            Override symbols.json.
+#   output=<path>             Override xpc_surface.json output path.
+#   markdown_output=<path>    Override xpc_surface.md output path.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+usage() {
+  sed -n '3,17p' "$0"
+}
+
+[[ $# -ge 2 ]] || {
+  usage >&2
+  exit 1
+}
+
+project="$1"
+program="$2"
+shift 2
+
+objc_metadata=""
+strings=""
+symbols=""
+output=""
+markdown_output=""
+
+for arg in "$@"; do
+  case "$arg" in
+    objc_metadata=*)   objc_metadata="${arg#objc_metadata=}" ;;
+    strings=*)         strings="${arg#strings=}" ;;
+    symbols=*)         symbols="${arg#symbols=}" ;;
+    output=*)          output="${arg#output=}" ;;
+    markdown_output=*) markdown_output="${arg#markdown_output=}" ;;
+    *) printf 'ghidra-re: warning: unknown argument: %s\n' "$arg" >&2 ;;
+  esac
+done
+
+PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 - "$project" "$program" \
+  "$objc_metadata" "$strings" "$symbols" "$output" "$markdown_output" <<'PY'
+import json
+import sys
+
+from cerberus_re_skill.modules.xpc_surface import build_xpc_surface
+
+project, program, objc_metadata, strings, symbols, output, markdown_output = sys.argv[1:8]
+
+result = build_xpc_surface(
+    project=project,
+    program=program,
+    objc_metadata_path=objc_metadata or None,
+    strings_path=strings or None,
+    symbols_path=symbols or None,
+    output=output or None,
+    markdown_output=markdown_output or None,
+)
+print(json.dumps(result, indent=2))
+PY

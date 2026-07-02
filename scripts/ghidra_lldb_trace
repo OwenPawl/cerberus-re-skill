@@ -1,0 +1,782 @@
+#!/usr/bin/env bash
+#
+# ghidra_lldb_trace
+#
+# Attaches LLDB to a running process (or launches one) and traces function
+# calls at specified addresses or symbol names, capturing argument registers,
+# return values, and backtraces.  Designed for agent-driven runtime analysis
+# of binaries and Apple frameworks that you own or launch.
+#
+# Architecture:
+#   1. Writes a Python breakpoint handler module to a temp file.
+#   2. Generates an LLDB batch command script that imports the module,
+#      sets breakpoints, runs the process, then emits structured JSON.
+#   3. Runs lldb --batch --no-lldbinit and parses the output.
+#
+# Constraints:
+#   • Requires Xcode LLDB (ships with developer tools).
+#   • On macOS with SIP, you can only attach to processes you launch yourself
+#     or processes that have the get-task-allow entitlement.
+#   • dyld shared cache symbols (malloc, free, etc.) will appear as
+#     "unresolved" when traced via a binary that doesn't have debug info —
+#     trace ObjC methods or Swift functions from locally compiled binaries
+#     for best results.
+#   • Breakpoints on symbols in dyld-extracted binaries work when the binary
+#     has DWARF debug symbols or if the full file address is specified.
+#
+# Usage:
+#   ghidra_lldb_trace <project_name> <program_name> <key=value ...>
+#
+# Key=value arguments:
+#   launch_cmd=<path> [<args>]  Launch this binary under LLDB.
+#   attach_pid=<pid>            Attach to a running process by PID.
+#   attach_name=<name>          Attach (waiting) to a process by name.
+#   symbols=<sym1,sym2,...>     Symbol names to trace (resolved at load time).
+#   addresses=<0x1,0x2,...>     File addresses to trace (e.g., from Ghidra export).
+#   max_hits=<N>                Stop after N total breakpoint hits (default: 100).
+#   timeout=<N>                 Abort after N seconds of inactivity (default: 30).
+#   capture_args=true           Capture x0-x7 ARM64 integer registers (default: true).
+#   capture_backtrace=true      Capture call stack at each hit (default: false).
+#   capture_objc_class=true     Read x0->isa and record the masked ObjC class pointer (default: false).
+#   capture_objc_args=true      Resolve x0 isa via isa_map and read selector cstring from x1 for ObjC method hits (default: false).
+#   objc_description_registers=x2[,x3]  Evaluate descriptions for explicitly known ObjC object
+#                               arguments only; evaluation calls `description` in the target.
+#   isa_map=<path>              Override isa_map.json path (default: export bundle isa_map.json).
+#   output=<path>               Override output JSON path.
+#
+# Output:
+#   <exports>/<project_name>/<program_name>/lldb_trace_<timestamp>.json
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/common.sh"
+
+usage() {
+  sed -n '3,59p' "$0"
+}
+
+[[ $# -ge 2 ]] || { usage >&2; exit 1; }
+
+project_name="$1"
+program_name="$2"
+shift 2
+
+ghidra_re_require_tools
+ghidra_re_export_env
+
+# Parse key=value args
+launch_cmd=""
+attach_pid=""
+attach_name=""
+symbols=""
+addresses=""
+max_hits="100"
+timeout_s="30"
+capture_args="true"
+capture_backtrace="false"
+capture_objc_class="false"
+capture_objc_args="false"
+objc_description_registers=""
+isa_map_override=""
+output_override=""
+
+for arg in "$@"; do
+  case "$arg" in
+    launch_cmd=*)          launch_cmd="${arg#launch_cmd=}" ;;
+    attach_pid=*)          attach_pid="${arg#attach_pid=}" ;;
+    attach_name=*)         attach_name="${arg#attach_name=}" ;;
+    symbols=*)             symbols="${arg#symbols=}" ;;
+    addresses=*)           addresses="${arg#addresses=}" ;;
+    max_hits=*)            max_hits="${arg#max_hits=}" ;;
+    timeout=*)             timeout_s="${arg#timeout=}" ;;
+    capture_args=*)        capture_args="${arg#capture_args=}" ;;
+    capture_backtrace=*)   capture_backtrace="${arg#capture_backtrace=}" ;;
+    capture_objc_class=*)  capture_objc_class="${arg#capture_objc_class=}" ;;
+    capture_objc_args=*)   capture_objc_args="${arg#capture_objc_args=}" ;;
+    objc_description_registers=*) objc_description_registers="${arg#objc_description_registers=}" ;;
+    isa_map=*)             isa_map_override="${arg#isa_map=}" ;;
+    output=*)              output_override="${arg#output=}" ;;
+    *) printf 'ghidra-re: warning: unknown argument: %s\n' "$arg" >&2 ;;
+  esac
+done
+
+[[ -n "$launch_cmd" || -n "$attach_pid" || -n "$attach_name" ]] || \
+  ghidra_re_die "one of launch_cmd=, attach_pid=, or attach_name= is required"
+
+[[ -n "$symbols" || -n "$addresses" ]] || \
+  ghidra_re_die "at least one of symbols= or addresses= is required"
+
+lldb_py="$(lldb --python-path 2>/dev/null)" || \
+  ghidra_re_die "lldb not found — install Xcode"
+
+export_dir="$(ghidra_re_export_dir "$project_name" "$program_name")"
+mkdir -p "$export_dir"
+
+timestamp="$(ghidra_re_timestamp)"
+output_file="${output_override:-$export_dir/lldb_trace_${timestamp}.json}"
+isa_map_path=""
+
+if [[ "$capture_objc_args" == "true" ]]; then
+  capture_objc_class="true"
+fi
+
+if [[ -n "$objc_description_registers" ]]; then
+  if [[ ! "$objc_description_registers" =~ ^x[0-7](,x[0-7])*$ ]]; then
+    ghidra_re_die "objc_description_registers must be a comma-separated subset of x0 through x7"
+  fi
+  capture_objc_args="true"
+  capture_objc_class="true"
+fi
+
+if [[ "$capture_objc_class" == "true" || "$capture_objc_args" == "true" ]]; then
+  isa_map_path="${isa_map_override:-$export_dir/isa_map.json}"
+  if [[ -n "$isa_map_override" && ! -f "$isa_map_path" ]]; then
+    ghidra_re_die "isa map not found: $isa_map_path"
+  fi
+  if [[ -z "$isa_map_override" && ! -f "$isa_map_path" ]]; then
+    if "$SCRIPT_DIR/ghidra_build_isa_map" "$project_name" "$program_name" >/dev/null 2>&1; then
+      :
+    else
+      printf 'ghidra-re: warning: could not build isa map automatically for %s/%s\n' \
+        "$project_name" "$program_name" >&2
+    fi
+  fi
+  if [[ ! -f "$isa_map_path" ]]; then
+    isa_map_path=""
+  fi
+fi
+
+# Temp files — unique names avoid module import clashes between runs
+run_id="$(printf '%s' "$$_${RANDOM}" | tr -dc 'a-z0-9' | head -c 12 || true)"
+handler_module="ghidra_lldb_h_${run_id}"
+handler_py="$(mktemp "/tmp/${handler_module}_XXXXXX.py")"
+# LLDB imports the module as the filename without .py - rename to match
+handler_py_actual="/tmp/${handler_module}.py"
+mv "$handler_py" "$handler_py_actual"
+lldb_script="$(mktemp "/tmp/ghidra_lldb_trace_${run_id}_XXXXXX.lldb")"
+lldb_out="$(mktemp "/tmp/ghidra_lldb_out_${run_id}_XXXXXX.txt")"
+parse_script="$(mktemp "/tmp/ghidra_lldb_parse_${run_id}_XXXXXX.py")"
+launch_parse_file="$(mktemp "/tmp/ghidra_lldb_launch_${run_id}_XXXXXX.txt")"
+
+cleanup() {
+  if [[ "${GHIDRA_LLDB_KEEP_TEMPS:-}" != "1" ]]; then
+    rm -f "$handler_py_actual" "$lldb_script" "$lldb_out" "$parse_script" "$launch_parse_file"
+  else
+    printf 'ghidra-re: keeping temp files:\n  handler: %s\n  script: %s\n  output: %s\n' \
+      "$handler_py_actual" "$lldb_script" "$lldb_out" >&2
+  fi
+}
+trap cleanup EXIT
+
+printf 'ghidra-re: LLDB trace for %s/%s\n' "$project_name" "$program_name"
+printf '  Symbols:   %s\n' "${symbols:-<none>}"
+printf '  Addresses: %s\n' "${addresses:-<none>}"
+printf '  Max hits:  %s  Timeout: %ss\n' "$max_hits" "$timeout_s"
+
+# Resolve the longest executable prefix so an unquoted binary path may contain
+# spaces while preserving trailing launch arguments.
+launch_bin=""
+launch_args=""
+lldb_quote_arg() {
+  python3 - "$1" <<'PY'
+import shlex
+import sys
+
+print(shlex.quote(sys.argv[1]))
+PY
+}
+
+if [[ -n "$launch_cmd" ]]; then
+  launch_parts=()
+  if python3 - "$launch_cmd" > "$launch_parse_file" <<'PY'
+import shlex
+import sys
+
+try:
+    parts = shlex.split(sys.argv[1])
+except ValueError:
+    raise SystemExit(1)
+for part in parts:
+    print(part)
+PY
+  then
+    while IFS= read -r launch_part; do
+      launch_parts+=("$launch_part")
+    done < "$launch_parse_file"
+  fi
+  if [[ ${#launch_parts[@]} -gt 0 && -x "${launch_parts[0]}" ]]; then
+    launch_bin="${launch_parts[0]}"
+    for launch_part in "${launch_parts[@]:1}"; do
+      quoted_part="$(lldb_quote_arg "$launch_part")"
+      launch_args+=" $quoted_part"
+    done
+  else
+    launch_bin="$launch_cmd"
+  fi
+  if [[ ! -x "$launch_bin" ]]; then
+    launch_candidate="$launch_cmd"
+    while [[ "$launch_candidate" == *" "* ]]; do
+      launch_candidate="${launch_candidate% *}"
+      if [[ -x "$launch_candidate" ]]; then
+        launch_bin="$launch_candidate"
+        launch_args="${launch_cmd#"$launch_candidate"}"
+        break
+      fi
+    done
+  fi
+  if [[ ! -x "$launch_bin" && "$launch_cmd" == *" "* ]]; then
+    launch_bin="${launch_cmd%% *}"
+    launch_args="${launch_cmd#"$launch_bin"}"
+  fi
+fi
+
+# ── Write the Python handler module ──────────────────────────────────────────
+# Build the handler as a Python file with all optional sections at correct indent level (4 spaces = inside function).
+{
+cat << HANDLER_HEADER
+import lldb, json, sys, os
+_hits = []
+_max_hits = ${max_hits}
+_hits_file = "${lldb_out}.hits.json"   # flush hits here so timeout-kill doesn't lose them
+_preflight_file = "${lldb_out}.preflight.json"  # persist resolved zero-hit sentinels too
+_modules_file = "${lldb_out}.modules.json"  # persist runtime image identity for drift audits
+_program_name = "${program_name}"
+_runtime_modules = []
+_isa_map_file = "${isa_map_path}"
+_isa_entries = {}
+_isa_map_error = None
+_data_slide = None          # set by LLDB script after attach via _compute_data_slide()
+_anchor_class_static = None # Ghidra address of anchor class from isa_map
+_objc_description_registers = [r for r in "${objc_description_registers}".split(",") if r]
+
+if _isa_map_file and os.path.exists(_isa_map_file):
+    try:
+        with open(_isa_map_file, 'r') as _f:
+            _isa_payload = json.load(_f)
+        if isinstance(_isa_payload, dict) and isinstance(_isa_payload.get("entries"), dict):
+            _isa_entries = _isa_payload.get("entries", {})
+        elif isinstance(_isa_payload, dict):
+            _isa_entries = _isa_payload
+        # Pick anchor class for slide computation (first "class" kind entry)
+        for _addr, _ent in _isa_entries.items():
+            if isinstance(_ent, dict) and _ent.get("kind") == "class":
+                _anchor_class_static = int(_addr, 16)
+                _anchor_class_name = _ent.get("name", "")
+                break
+    except Exception as _e:
+        _isa_map_error = str(_e)
+
+def _compute_data_slide(debugger):
+    """Called by LLDB script after attach to compute DATA segment ASLR slide."""
+    global _data_slide
+    if not _anchor_class_static or not _isa_entries:
+        return
+    try:
+        target = debugger.GetSelectedTarget()
+        ci = debugger.GetCommandInterpreter()
+        result = lldb.SBCommandReturnObject()
+        ci.HandleCommand(
+            f'expression (unsigned long long)objc_getClass("{_anchor_class_name}")',
+            result)
+        if result.Succeeded():
+            out = result.GetOutput().strip()
+            # Parse address from output like "(unsigned long long) $0 = 0x1234567890abcd"
+            # Must use int(token, 0) to handle hex strings — int(token) is decimal-only
+            for token in out.split():
+                try:
+                    runtime_val = int(token, 0)
+                    if runtime_val > 0x10000:   # skip small constants like register indices
+                        _data_slide = runtime_val - _anchor_class_static
+                        return
+                except ValueError:
+                    continue
+    except Exception:
+        pass
+
+def _flush_hits():
+    try:
+        with open(_hits_file, 'w') as _f:
+            json.dump(_hits, _f)
+    except Exception:
+        pass
+
+def _flush_preflight(target):
+    try:
+        _bps = [
+            {
+                "id": target.GetBreakpointAtIndex(_i).GetID(),
+                "locs": target.GetBreakpointAtIndex(_i).GetNumLocations(),
+                "hits": target.GetBreakpointAtIndex(_i).GetHitCount(),
+            }
+            for _i in range(target.GetNumBreakpoints())
+        ]
+        with open(_preflight_file, 'w') as _f:
+            json.dump(_bps, _f)
+    except Exception:
+        pass
+
+def _capture_runtime_modules(target):
+    global _runtime_modules
+    try:
+        found = []
+        for _i in range(target.GetNumModules()):
+            _module = target.GetModuleAtIndex(_i)
+            _spec = _module.GetFileSpec()
+            _name = _spec.GetFilename() or ""
+            if _name != _program_name:
+                continue
+            _directory = _spec.GetDirectory() or ""
+            _path = os.path.join(_directory, _name) if _directory else _name
+            found.append({
+                "name": _name,
+                "path": _path,
+                "uuid": _module.GetUUIDString() or None,
+                "triple": _module.GetTriple() or None,
+            })
+        _runtime_modules = found
+        with open(_modules_file, 'w') as _f:
+            json.dump(found, _f)
+    except Exception:
+        pass
+
+def _read_u64_reg(frame, reg_name):
+    for _rs in frame.GetRegisters():
+        for _r in _rs:
+            if _r.GetName() == reg_name:
+                try:
+                    return _r.GetValueAsUnsigned()
+                except Exception:
+                    return None
+    return None
+
+def _read_cstring(process, addr, limit=256):
+    if not addr:
+        return None
+    _err = lldb.SBError()
+    try:
+        _value = process.ReadCStringFromMemory(addr, limit, _err)
+    except Exception:
+        return None
+    if not _err.Success() or _value is None:
+        return None
+    if not isinstance(_value, str):
+        return None
+    _value = _value.strip()
+    if not _value:
+        return None
+    for _ch in _value:
+        _code = ord(_ch)
+        if _code < 0x20 and _ch not in "\\t\\n\\r":
+            return None
+    return _value
+
+def _resolve_isa_entry(masked_isa):
+    if masked_isa is None:
+        return None
+    # If we have a DATA slide, subtract it to get the Ghidra address
+    if _data_slide is not None:
+        ghidra_addr = masked_isa - _data_slide
+        _key = hex(ghidra_addr)
+        _entry = _isa_entries.get(_key)
+        if _entry:
+            return _entry
+    # Fallback: try raw runtime address (works if map happens to use runtime addrs)
+    _key = hex(masked_isa).lower()
+    _entry = _isa_entries.get(_key)
+    if _entry is None:
+        _entry = _isa_entries.get(hex(masked_isa))
+    return _entry
+
+def _describe_objc_pointer(frame, pointer):
+    """Describe an explicitly selected ObjC object argument at a breakpoint."""
+    result = {"pointer": hex(pointer)}
+    try:
+        options = lldb.SBExpressionOptions()
+        options.SetIgnoreBreakpoints(True)
+        options.SetTryAllThreads(False)
+        options.SetTimeoutInMicroSeconds(500000)
+        value = frame.EvaluateExpression(f"(id){hex(pointer)}", options)
+        error = value.GetError()
+        if error.Fail():
+            result["error"] = error.GetCString()
+            return result
+        description = value.GetObjectDescription()
+        if description:
+            result["description"] = description[:4096]
+        else:
+            result["error"] = "no object description"
+    except Exception as exc:
+        result["error"] = str(exc)
+    return result
+
+def ghidra_bp_handler(frame, bp_loc, internal_dict):
+    global _hits
+    try:
+        if not _runtime_modules:
+            _capture_runtime_modules(frame.GetThread().GetProcess().GetTarget())
+        sym  = frame.GetSymbol()
+        rec  = {
+            "hit_index": len(_hits),
+            "pc":        hex(frame.GetPC()),
+            "symbol":    sym.GetName() if sym.IsValid() else None,
+        }
+HANDLER_HEADER
+
+if [[ "$capture_args" == "true" ]]; then
+cat << 'HANDLER_ARGS'
+        regs = {}
+        for rs in frame.GetRegisters():
+            for r in rs:
+                n = r.GetName()
+                if n and n.startswith("x") and n[1:].isdigit() and int(n[1:]) < 8:
+                    regs[n] = r.GetValue()
+        rec["args"] = regs
+HANDLER_ARGS
+fi
+
+if [[ "$capture_backtrace" == "true" ]]; then
+cat << 'HANDLER_BT'
+        bt = []
+        for i in range(min(frame.GetThread().GetNumFrames(), 16)):
+            f  = frame.GetThread().GetFrameAtIndex(i)
+            s  = f.GetSymbol()
+            bt.append({"frame": i, "pc": hex(f.GetPC()),
+                       "symbol": s.GetName() if s.IsValid() else None})
+        rec["backtrace"] = bt
+HANDLER_BT
+fi
+
+if [[ "$capture_objc_class" == "true" ]]; then
+cat << 'HANDLER_CLS'
+        try:
+            _proc = frame.GetThread().GetProcess()
+            _x0_val = _read_u64_reg(frame, "x0")
+            if _x0_val:
+                if "args" in rec and "x0" in rec["args"]:
+                    rec["self_ptr"] = rec["args"]["x0"]
+                else:
+                    rec["self_ptr"] = hex(_x0_val)
+                _err = lldb.SBError()
+                _isa_raw = _proc.ReadPointerFromMemory(_x0_val, _err)
+                if _err.Success():
+                    _isa = _isa_raw & 0x0000FFFFFFFFFFF8  # arm64e ISA mask: clears 16-bit PAC (bits 63:48) + low 3 alignment bits
+                    rec["objc_isa"] = hex(_isa)
+                    _isa_entry = _resolve_isa_entry(_isa)
+                    if isinstance(_isa_entry, dict):
+                        rec["self_class"] = _isa_entry.get("name")
+                        rec["self_class_kind"] = _isa_entry.get("kind")
+                    elif isinstance(_isa_entry, str):
+                        rec["self_class"] = _isa_entry
+                else:
+                    rec["objc_isa_error"] = _err.GetCString()
+            if _isa_map_error and "isa_map_error" not in rec:
+                rec["isa_map_error"] = _isa_map_error
+        except Exception as _e:
+            rec["objc_isa"] = f"err:{_e}"
+HANDLER_CLS
+fi
+
+if [[ "$capture_objc_args" == "true" ]]; then
+cat << 'HANDLER_OBJC_ARGS'
+        try:
+            _symbol_name = rec.get("symbol") or ""
+            if _symbol_name.startswith("+[") or _symbol_name.startswith("-["):
+                _proc = frame.GetThread().GetProcess()
+                _x1_val = _read_u64_reg(frame, "x1")
+                if _x1_val:
+                    rec["selector_ptr"] = hex(_x1_val)
+                    _selector = _read_cstring(_proc, _x1_val)
+                    if _selector:
+                        rec["selector"] = _selector
+            else:
+                rec["objc_selector_skipped"] = "non_objc_symbol"
+        except Exception as _e:
+            rec["selector_error"] = str(_e)
+HANDLER_OBJC_ARGS
+fi
+
+if [[ -n "$objc_description_registers" ]]; then
+cat << 'HANDLER_OBJC_DESCRIPTIONS'
+        descriptions = {}
+        for register_name in _objc_description_registers:
+            pointer = _read_u64_reg(frame, register_name)
+            if pointer:
+                descriptions[register_name] = _describe_objc_pointer(frame, pointer)
+        if descriptions:
+            rec["objc_descriptions"] = descriptions
+HANDLER_OBJC_DESCRIPTIONS
+fi
+
+cat << 'HANDLER_TAIL'
+        _hits.append(rec)
+        _flush_hits()   # persist every hit so timeout-kill doesn't lose data
+        _flush_preflight(frame.GetThread().GetProcess().GetTarget())
+        if len(_hits) >= _max_hits:
+            frame.GetThread().GetProcess().Stop()
+            return True   # stop here
+        return False      # continue automatically
+    except Exception:
+        return False      # never let the handler crash
+HANDLER_TAIL
+} > "$handler_py_actual"
+
+# ── Write the LLDB batch command script ──────────────────────────────────────
+{
+  # Target setup
+  if [[ -n "$launch_cmd" ]]; then
+    printf 'target create "%s"\n' "$launch_bin"
+    if [[ -n "${launch_args# }" ]]; then
+      printf 'settings set -- target.run-args%s\n' "$launch_args"
+    fi
+  elif [[ -n "$attach_pid" ]]; then
+    printf 'target create ""\n'
+    printf 'attach -p %s\n' "$attach_pid"
+  elif [[ -n "$attach_name" ]]; then
+    printf 'target create ""\n'
+    printf 'attach -n "%s" --waitfor\n' "$attach_name"
+  fi
+
+  # Import handler and compute DATA slide for isa resolution
+  printf 'command script import "%s"\n' "$handler_py_actual"
+  if [[ "$capture_objc_class" == "true" && -n "$isa_map_path" ]]; then
+    printf 'script %s._compute_data_slide(lldb.debugger)\n' "$handler_module"
+  fi
+  printf 'script %s._capture_runtime_modules(lldb.debugger.GetSelectedTarget())\n' "$handler_module"
+
+  # Symbol breakpoints — add handler immediately after each set so it applies to that BP
+  IFS=',' read -ra sym_arr <<< "${symbols:-}"
+  for sym in "${sym_arr[@]+"${sym_arr[@]}"}"; do
+    # Trim only leading/trailing whitespace (not internal spaces — ObjC selectors need them)
+    sym="${sym#"${sym%%[![:space:]]*}"}"
+    sym="${sym%"${sym##*[![:space:]]}"}"
+    [[ -z "$sym" ]] && continue
+    printf 'breakpoint set --name "%s"\n' "$sym"
+    printf 'breakpoint command add --python-function %s.ghidra_bp_handler\n' "$handler_module"
+  done
+
+  # Address breakpoints — same pattern
+  IFS=',' read -ra addr_arr <<< "${addresses:-}"
+  for addr in "${addr_arr[@]+"${addr_arr[@]}"}"; do
+    # Trim leading/trailing whitespace only
+    addr="${addr#"${addr%%[![:space:]]*}"}"
+    addr="${addr%"${addr##*[![:space:]]}"}"
+    [[ -z "$addr" ]] && continue
+    printf 'breakpoint set --address %s\n' "$addr"
+    printf 'breakpoint command add --python-function %s.ghidra_bp_handler\n' "$handler_module"
+  done
+
+  # Persist the complete initial preflight before a bounded wait can time out.
+  printf 'script %s._flush_preflight(lldb.debugger.GetSelectedTarget())\n' "$handler_module"
+
+  # Launch or continue
+  if [[ -n "$launch_cmd" ]]; then
+    printf 'run\n'
+  else
+    printf 'continue\n'
+  fi
+
+  # Emit results — single-line python to avoid blank-line termination
+  printf 'script\n'
+  printf 'import json as _j, %s as _m, lldb as _l; _t = _l.debugger.GetSelectedTarget(); _bps = [{"id": _t.GetBreakpointAtIndex(_i).GetID(), "locs": _t.GetBreakpointAtIndex(_i).GetNumLocations(), "hits": _t.GetBreakpointAtIndex(_i).GetHitCount()} for _i in range(_t.GetNumBreakpoints())]; print("GHIDRA_TRACE_BEGIN"); print(_j.dumps({"hits": _m._hits, "breakpoints": _bps, "runtime_modules": _m._runtime_modules, "data_slide": hex(_m._data_slide) if _m._data_slide is not None else None, "isa_map_error": _m._isa_map_error})); print("GHIDRA_TRACE_END")\n' \
+    "$handler_module"
+  printf '\n'
+
+  printf 'quit\n'
+} > "$lldb_script"
+
+# ── Run LLDB (with hard wall-clock timeout) ───────────────────────────────────
+# macOS ships without GNU coreutils `timeout`, so use a background-killer pattern.
+# The handler flushes hits to a sidecar file on every hit, so SIGTERM-kill is safe.
+# Keep stderr with stdout so attach-policy errors survive into raw_tail when
+# LLDB exits before the structured marker is printed.
+lldb --no-lldbinit --batch -s "$lldb_script" > "$lldb_out" 2>&1 &
+_lldb_pid=$!
+( sleep "$timeout_s" && kill -TERM "$_lldb_pid" 2>/dev/null ) &
+_killer_pid=$!
+wait "$_lldb_pid" 2>/dev/null || true
+kill "$_killer_pid" 2>/dev/null || true
+
+# ── Parse output ──────────────────────────────────────────────────────────────
+cat > "$parse_script" << 'PARSE_EOF'
+import sys, json, os, re
+
+raw_file    = sys.argv[1]
+output_file = sys.argv[2]
+project     = sys.argv[3]
+program     = sys.argv[4]
+symbols_str = sys.argv[5]
+addrs_str   = sys.argv[6]
+max_hits    = int(sys.argv[7])
+timeout_s   = float(sys.argv[8])
+timestamp   = sys.argv[9]
+capture_objc_args = sys.argv[10] == "true"
+isa_map_path = sys.argv[11]
+
+with open(raw_file) as f:
+    raw = f.read()
+
+def _recover_breakpoints_from_raw(raw_text):
+    recovered = []
+    seen = set()
+    for match in re.finditer(r'Breakpoint\s+(\d+):\s+([^\n]+)', raw_text):
+        bp_id = int(match.group(1))
+        if bp_id in seen:
+            continue
+        seen.add(bp_id)
+        line = match.group(2)
+        recovered.append({
+            "id": bp_id,
+            "locs": 1 if "where =" in line or "address =" in line else 0,
+            "hits": 0,
+            "raw": line.strip(),
+        })
+    return recovered
+
+m = re.search(r'GHIDRA_TRACE_BEGIN\s*\n(.*?)\nGHIDRA_TRACE_END', raw, re.DOTALL)
+hits_sidecar = raw_file + ".hits.json"   # written per-hit by handler for timeout-safety
+preflight_sidecar = raw_file + ".preflight.json"  # written before wait and refreshed per-hit
+modules_sidecar = raw_file + ".modules.json"  # written after attach or at the first runtime hit
+
+def _load_sidecar(path, default):
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path) as sidecar:
+            return json.load(sidecar)
+    except Exception:
+        return default
+
+def _annotate_requested_breakpoints(breakpoints):
+    requested = [
+        {"kind": "symbol", "value": s.strip()}
+        for s in symbols_str.split(",") if s.strip()
+    ] + [
+        {"kind": "address", "value": a.strip()}
+        for a in addrs_str.split(",") if a.strip()
+    ]
+    annotated = []
+    for index, item in enumerate(breakpoints if isinstance(breakpoints, list) else []):
+        if not isinstance(item, dict):
+            continue
+        updated = dict(item)
+        if index < len(requested):
+            updated.setdefault("requested", requested[index])
+        annotated.append(updated)
+    return annotated
+
+if not m:
+    # Try to recover hits from the per-hit sidecar written by the handler
+    recovered_hits = _load_sidecar(hits_sidecar, [])
+    recovered_breakpoints = _load_sidecar(preflight_sidecar, [])
+    preflight_source = None
+    if isinstance(recovered_breakpoints, list) and recovered_breakpoints:
+        recovered_breakpoints = [
+            dict(item, source="durable_preflight_sidecar")
+            for item in recovered_breakpoints if isinstance(item, dict)
+        ]
+        preflight_source = "durable_preflight_sidecar"
+    else:
+        recovered_breakpoints = _recover_breakpoints_from_raw(raw)
+        if recovered_breakpoints:
+            preflight_source = "raw_lldb_output"
+    if recovered_hits:
+        suffix = " and full breakpoint preflight" if preflight_source == "durable_preflight_sidecar" else ""
+        result = {
+            "ok":          True,
+            "warning":     "timeout: GHIDRA_TRACE_BEGIN not found but recovered "
+                           + str(len(recovered_hits)) + " hits" + suffix + " from sidecar",
+            "hits":        recovered_hits,
+            "breakpoints": recovered_breakpoints,
+            "runtime_modules": _load_sidecar(modules_sidecar, []),
+            "breakpoint_preflight_recovered": bool(recovered_breakpoints),
+            "breakpoint_preflight_source": preflight_source,
+        }
+    else:
+        result = {
+            "ok":          True,
+            "warning":     "GHIDRA_TRACE_BEGIN marker not found in LLDB output",
+            "raw_tail":    raw[-2000:],
+            "hits":        [],
+            "breakpoints": recovered_breakpoints,
+            "runtime_modules": _load_sidecar(modules_sidecar, []),
+            "breakpoint_preflight_recovered": bool(recovered_breakpoints),
+            "breakpoint_preflight_source": preflight_source,
+        }
+else:
+    try:
+        trace_data = json.loads(m.group(1).strip())
+    except json.JSONDecodeError as e:
+        trace_data = {"hits": [], "breakpoints": [], "parse_error": str(e)}
+    # Merge sidecar hits if any are missing from the in-memory list (shouldn't happen)
+    result = {"ok": True}
+    result.update(trace_data)
+result.setdefault("runtime_modules", _load_sidecar(modules_sidecar, []))
+result["breakpoints"] = _annotate_requested_breakpoints(result.get("breakpoints", []))
+# Clean up sidecars
+for sidecar in (hits_sidecar, preflight_sidecar, modules_sidecar):
+    try:
+        os.unlink(sidecar)
+    except Exception:
+        pass
+
+result.update({
+    "project":             project,
+    "program":             program,
+    "symbols_requested":   [s.strip() for s in symbols_str.split(",") if s.strip()],
+    "addresses_requested": [a.strip() for a in addrs_str.split(",") if a.strip()],
+    "max_hits":            max_hits,
+    "timeout_s":           timeout_s,
+    "timestamp":           timestamp,
+    "capture_objc_args":   capture_objc_args,
+    "isa_map":             isa_map_path or None,
+    "hit_count":           len(result.get("hits", [])),
+})
+
+out_dir = os.path.dirname(output_file)
+if out_dir:
+    os.makedirs(out_dir, exist_ok=True)
+with open(output_file, 'w') as f:
+    json.dump(result, f, indent=2)
+
+hits      = result.get("hits", [])
+bps       = result.get("breakpoints", [])
+bps_hit   = sum(1 for b in bps if b.get("hits", 0) > 0)
+bps_total = len(bps)
+
+print(json.dumps({
+    "ok":          True,
+    "hit_count":   len(hits),
+    "bps_total":   bps_total,
+    "bps_hit":     bps_hit,
+    "warning":     result.get("warning"),
+    "output_file": output_file,
+}))
+PARSE_EOF
+
+result_json=$(python3 "$parse_script" \
+  "$lldb_out" "$output_file" \
+  "$project_name" "$program_name" \
+  "${symbols:-}" "${addresses:-}" \
+  "$max_hits" "$timeout_s" "$timestamp" \
+  "$capture_objc_args" "$isa_map_path")
+
+ok=$(printf '%s' "$result_json" | python3 -c \
+  "import json,sys; d=json.load(sys.stdin); print(d.get('ok', False))" \
+  2>/dev/null || echo "False")
+if [[ "$ok" != "True" ]]; then
+  ghidra_re_die "LLDB trace failed: $result_json"
+fi
+
+printf '%s' "$result_json" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print('\nLLDB trace complete')
+print(f\"  Breakpoints: {d['bps_total']} set, {d['bps_hit']} fired\")
+print(f\"  Total hits:  {d['hit_count']}\")
+if d.get('warning'):
+    print(f\"  Warning: {d['warning']}\")
+print(f\"\n  Output: {d['output_file']}\")
+"
+
+echo "$output_file"

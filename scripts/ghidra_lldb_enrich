@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+#
+# ghidra_lldb_enrich
+#
+# Enrich an LLDB runtime trace with static Ghidra function context.
+#
+# Usage:
+#   ghidra_lldb_enrich <project_name> <program_name> <lldb_trace.json> [key=value ...]
+#
+# Key=value arguments:
+#   function_inventory=<path>   Override function_inventory.json path.
+#   lldb_symbols=<path>         Override lldb_symbols.json path.
+#   output=<path>               Override enriched output path.
+#   known_runtime_pc=<addr>     Manual runtime address for slide calculation.
+#   known_static_addr=<addr>    Matching static/Ghidra address for slide calculation.
+#   include_decompile=false     Attach cached decompiler output for matched hits.
+#   decompile_timeout=60        Per-function decompiler timeout in seconds.
+#   auto_apply=false            Apply runtime-observed comments/bookmarks.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+usage() {
+  sed -n '3,20p' "$0"
+}
+
+[[ $# -ge 3 ]] || {
+  usage >&2
+  exit 1
+}
+
+project_name="$1"
+program_name="$2"
+trace_json="$3"
+shift 3
+
+function_inventory=""
+lldb_symbols=""
+output=""
+known_runtime_pc=""
+known_static_addr=""
+include_decompile="false"
+decompile_timeout="60"
+auto_apply="false"
+
+for arg in "$@"; do
+  case "$arg" in
+    function_inventory=*) function_inventory="${arg#function_inventory=}" ;;
+    lldb_symbols=*)       lldb_symbols="${arg#lldb_symbols=}" ;;
+    output=*)             output="${arg#output=}" ;;
+    known_runtime_pc=*)   known_runtime_pc="${arg#known_runtime_pc=}" ;;
+    known_static_addr=*)  known_static_addr="${arg#known_static_addr=}" ;;
+    include_decompile=*)  include_decompile="${arg#include_decompile=}" ;;
+    decompile_timeout=*)  decompile_timeout="${arg#decompile_timeout=}" ;;
+    auto_apply=*)         auto_apply="${arg#auto_apply=}" ;;
+    *) printf 'ghidra-re: warning: unknown argument: %s\n' "$arg" >&2 ;;
+  esac
+done
+
+PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 - "$project_name" "$program_name" "$trace_json" \
+  "$function_inventory" "$lldb_symbols" "$output" "$known_runtime_pc" "$known_static_addr" \
+  "$include_decompile" "$decompile_timeout" "$auto_apply" <<'PY'
+import json
+import sys
+
+from cerberus_re_skill.modules.lldb_enrich import enrich_lldb_trace
+
+project, program, trace_json, function_inventory, lldb_symbols, output, known_runtime_pc, known_static_addr, include_decompile, decompile_timeout, auto_apply = sys.argv[1:12]
+
+def flag(value):
+    return str(value).lower() in {"1", "true", "yes", "on"}
+
+result = enrich_lldb_trace(
+    project=project,
+    program=program,
+    trace_path=trace_json,
+    function_inventory_path=function_inventory or None,
+    lldb_symbols_path=lldb_symbols or None,
+    output=output or None,
+    known_runtime_pc=known_runtime_pc or None,
+    known_static_addr=known_static_addr or None,
+    include_decompile=flag(include_decompile),
+    decompile_timeout=int(decompile_timeout or "60", 0),
+    auto_apply=flag(auto_apply),
+)
+print(json.dumps(result, indent=2))
+PY

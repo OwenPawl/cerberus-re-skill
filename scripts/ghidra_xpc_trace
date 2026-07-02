@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+#
+# ghidra_xpc_trace
+#
+# Trace common NSXPC connection/listener calls through ghidra_lldb_trace.
+#
+# Usage:
+#   ghidra_xpc_trace <project_name> <program_name> <key=value ...>
+#
+# Required live target argument:
+#   launch_cmd=<path> [<args>]  Launch this binary under LLDB.
+#   attach_pid=<pid>            Attach to a running process by PID.
+#   attach_name=<name>          Attach (waiting) to a process by name.
+#
+# Optional arguments:
+#   symbols=<sym1,sym2,...>     Extra symbols/selectors to trace.
+#   max_hits=<N>                Stop after N hits. Default: 100.
+#   timeout=<N>                 LLDB inactivity timeout. Default: 30.
+#   output=<path>               Override output JSON path.
+#   dry_run=true                Print the delegated ghidra_lldb_trace command.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+usage() {
+  sed -n '3,22p' "$0"
+}
+
+[[ $# -ge 2 ]] || {
+  usage >&2
+  exit 1
+}
+
+project="$1"
+program="$2"
+shift 2
+
+launch_cmd=""
+attach_pid=""
+attach_name=""
+extra_symbols=""
+max_hits="100"
+timeout_s="30"
+output=""
+dry_run="false"
+
+for arg in "$@"; do
+  case "$arg" in
+    launch_cmd=*) launch_cmd="${arg#launch_cmd=}" ;;
+    attach_pid=*) attach_pid="${arg#attach_pid=}" ;;
+    attach_name=*) attach_name="${arg#attach_name=}" ;;
+    symbols=*)    extra_symbols="${arg#symbols=}" ;;
+    max_hits=*)   max_hits="${arg#max_hits=}" ;;
+    timeout=*)    timeout_s="${arg#timeout=}" ;;
+    output=*)     output="${arg#output=}" ;;
+    dry_run=*)    dry_run="${arg#dry_run=}" ;;
+    *) printf 'ghidra-re: warning: unknown argument: %s\n' "$arg" >&2 ;;
+  esac
+done
+
+[[ -n "$launch_cmd" || -n "$attach_pid" || -n "$attach_name" || "$dry_run" == "true" ]] || {
+  usage >&2
+  exit 1
+}
+
+default_symbols="-[NSXPCConnection initWithMachServiceName:],-[NSXPCConnection initWithMachServiceName:options:],-[NSXPCConnection initWithServiceName:],-[NSXPCConnection setRemoteObjectInterface:],-[NSXPCConnection setExportedInterface:],-[NSXPCConnection setExportedObject:],-[NSXPCConnection remoteObjectProxy],-[NSXPCConnection resume],listener:shouldAcceptNewConnection:,interfaceWithProtocol:"
+symbols="$default_symbols"
+if [[ -n "$extra_symbols" ]]; then
+  symbols="$symbols,$extra_symbols"
+fi
+
+cmd=(
+  "$SCRIPT_DIR/ghidra_lldb_trace"
+  "$project"
+  "$program"
+  "symbols=$symbols"
+  "capture_args=true"
+  "capture_objc_args=true"
+  "capture_backtrace=true"
+  "max_hits=$max_hits"
+  "timeout=$timeout_s"
+)
+
+[[ -n "$launch_cmd" ]] && cmd+=("launch_cmd=$launch_cmd")
+[[ -n "$attach_pid" ]] && cmd+=("attach_pid=$attach_pid")
+[[ -n "$attach_name" ]] && cmd+=("attach_name=$attach_name")
+[[ -n "$output" ]] && cmd+=("output=$output")
+
+if [[ "$dry_run" == "true" ]]; then
+  printf '%q ' "${cmd[@]}"
+  printf '\n'
+  exit 0
+fi
+
+exec "${cmd[@]}"

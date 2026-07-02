@@ -1,0 +1,118 @@
+{
+  "schema_version": "agent_benchmark.v1",
+  "purpose": "Compare public agent behavior with no skills, long-run-agent, cerberus-re, and both skills on reproducible reverse-engineering and mission-memory tasks.",
+  "runners": [
+    {
+      "id": "claude-code",
+      "label": "Claude Code"
+    },
+    {
+      "id": "codex",
+      "label": "Codex"
+    }
+  ],
+  "configurations": [
+    {
+      "id": "no-skills",
+      "label": "No skills",
+      "enabled_skills": [],
+      "expected_pressure": "Baseline command discovery, evidence preservation, and documentation drift."
+    },
+    {
+      "id": "long-run-agent",
+      "label": "long-run-agent only",
+      "enabled_skills": [
+        "long-run-agent"
+      ],
+      "expected_pressure": "Truth preservation, claim tracking, resumability, and user steering."
+    },
+    {
+      "id": "cerberus-re",
+      "label": "cerberus-re only",
+      "enabled_skills": [
+        "cerberus-re"
+      ],
+      "expected_pressure": "RE artifact quality, command selection, and verification discipline."
+    },
+    {
+      "id": "cerberus-re-long-run-agent",
+      "label": "cerberus-re + long-run-agent",
+      "enabled_skills": [
+        "cerberus-re",
+        "long-run-agent"
+      ],
+      "expected_pressure": "Static, dynamic, and instrumentation RE loop with durable mission memory."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "environment-setup",
+      "label": "Environment setup",
+      "prompt_path": "benchmarks/tasks/environment-setup.md",
+      "timebox_minutes": 20,
+      "acceptance_checks": [
+        "Start from a fresh checkout.",
+        "Run the documented dependency install path in dry-run mode and record executable versus manual steps.",
+        "Run cerberus-re doctor when available, or record why it is unavailable."
+      ]
+    },
+    {
+      "id": "static-evidence",
+      "label": "Static evidence",
+      "prompt_path": "benchmarks/tasks/static-evidence.md",
+      "timebox_minutes": 35,
+      "acceptance_checks": [
+        "Build or identify a public local fixture.",
+        "Import the fixture into Ghidra when available, or record the missing prerequisite.",
+        "Produce a durable static artifact containing at least one class, selector, string, symbol, or function when tooling is available."
+      ]
+    },
+    {
+      "id": "dynamic-evidence",
+      "label": "Dynamic evidence",
+      "prompt_path": "benchmarks/tasks/dynamic-evidence.md",
+      "timebox_minutes": 30,
+      "acceptance_checks": [
+        "Run a bounded LLDB trace when LLDB and the fixture are available.",
+        "Preserve trace commands and generated JSON artifacts.",
+        "Separate runtime-hit claims from blocked or missing-prerequisite conditions."
+      ]
+    },
+    {
+      "id": "instrumentation-evidence",
+      "label": "Instrumentation evidence",
+      "prompt_path": "benchmarks/tasks/instrumentation-evidence.md",
+      "timebox_minutes": 30,
+      "acceptance_checks": [
+        "Generate or validate a Frida script without live attach unless runtime permission is explicit.",
+        "If live Frida is unavailable, record the blocker without claiming runtime hits.",
+        "Keep hook-installation, zero-hit, and missing-target evidence distinct."
+      ]
+    },
+    {
+      "id": "mission-memory",
+      "label": "Mission memory",
+      "prompt_path": "benchmarks/tasks/mission-memory.md",
+      "timebox_minutes": 25,
+      "acceptance_checks": [
+        "Record commands, claims, artifacts, failures, and next actions.",
+        "Interrupt and resume from durable files where the configuration permits.",
+        "Ensure important context is not left only in chat history."
+      ]
+    }
+  ],
+  "allowed_task_statuses": [
+    "not_run",
+    "completed",
+    "partial",
+    "blocked"
+  ],
+  "required_bundle_files": [
+    "README.md",
+    "commands.jsonl",
+    "claims.json",
+    "artifacts.json",
+    "failures.md",
+    "metrics.json"
+  ]
+}

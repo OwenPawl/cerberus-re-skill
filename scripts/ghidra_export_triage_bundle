@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+#
+# ghidra_export_triage_bundle
+#
+# Export entrypoints, sinks, candidate paths, and a Markdown triage summary.
+#
+# Usage:
+#   ghidra_export_triage_bundle <project_name> <program_name> [--output-dir <path>]
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m cerberus_re_skill export triage-bundle "$@"

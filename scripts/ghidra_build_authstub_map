@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+#
+# ghidra_build_authstub_map
+#
+# Build a dyld-backed authstub_map.json sidecar for Swift outlined resolution.
+#
+# Usage:
+#   ghidra_build_authstub_map <project_name> <program_name> [--binary <path>] [--dyld-source <root>] [--output-dir <path>]
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m cerberus_re_skill export authstub-map "$@"

@@ -1,0 +1,27 @@
+.DS_Store
+__MACOSX/
+*.backup-*
+*.log
+*.tmp
+*.swp
+local.env
+.env
+
+bridge-extension/CodexGhidraBridge/.gradle/
+bridge-extension/CodexGhidraBridge/build/
+
+cerberus-re-skill-share*.zip
+ghidra-re-mac-desktop-share*.zip
+
+dist/
+development/
+
+# Python build artefacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+.eggs/
+build/

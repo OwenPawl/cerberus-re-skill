@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+#
+# ghidra_resolve_swift_outlined
+#
+# Resolve Swift outlined helper and authstub names for a Swift-heavy project.
+#
+# Usage:
+#   ghidra_resolve_swift_outlined <project_name> <program_name> [--dry-run]
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m cerberus_re_skill export swift-outlined "$@"

@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+#
+# ghidra_generate_harness
+#
+# Generate a Swift or Objective-C harness from an enriched LLDB trace.
+#
+# Usage:
+#   ghidra_generate_harness <enriched_trace.json> [key=value ...]
+#
+# Key=value arguments:
+#   target=<symbol|address>       Function name, symbol, runtime PC, or Ghidra address.
+#   language=auto|objc|swift      Harness language. Default: auto.
+#   output=<path>                 Override output source path.
+#   framework=<name>              Override framework name.
+#   bundle_path=<path>            Override framework bundle path.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+usage() {
+  sed -n '3,18p' "$0"
+}
+
+[[ $# -ge 1 ]] || {
+  usage >&2
+  exit 1
+}
+
+trace_json="$1"
+shift
+
+target=""
+language="auto"
+output=""
+framework=""
+bundle_path=""
+
+for arg in "$@"; do
+  case "$arg" in
+    target=*)      target="${arg#target=}" ;;
+    language=*)    language="${arg#language=}" ;;
+    output=*)      output="${arg#output=}" ;;
+    framework=*)   framework="${arg#framework=}" ;;
+    bundle_path=*) bundle_path="${arg#bundle_path=}" ;;
+    *) printf 'ghidra-re: warning: unknown argument: %s\n' "$arg" >&2 ;;
+  esac
+done
+
+PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 - "$trace_json" "$target" "$language" \
+  "$output" "$framework" "$bundle_path" <<'PY'
+import json
+import sys
+
+from cerberus_re_skill.modules.harness import generate_harness
+
+trace_json, target, language, output, framework, bundle_path = sys.argv[1:7]
+
+result = generate_harness(
+    trace_path=trace_json,
+    target=target or None,
+    language=language,
+    output=output or None,
+    framework=framework or None,
+    bundle_path=bundle_path or None,
+)
+print(json.dumps(result, indent=2))
+PY
