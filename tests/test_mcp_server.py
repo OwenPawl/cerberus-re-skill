@@ -20,6 +20,7 @@ from cerberus_re_skill.mcp_runtime import (
     classify,
     make_run_result,
     parse_json_output,
+    parse_command_override,
     passthrough_policy,
 )
 
@@ -41,6 +42,26 @@ def test_settings(root: Path, cli_command: tuple[str, ...] | None = None) -> MCP
 
 
 class MCPRuntimeTests(unittest.TestCase):
+    def test_command_override_preserves_windows_paths(self) -> None:
+        command = parse_command_override(
+            r'"C:\Program Files\Python\python.exe" C:\Temp\fake_cli.py',
+            windows=True,
+        )
+        self.assertEqual(
+            command,
+            (r"C:\Program Files\Python\python.exe", r"C:\Temp\fake_cli.py"),
+        )
+
+    def test_command_override_accepts_portable_json_argv(self) -> None:
+        command = parse_command_override(
+            '["C:\\\\Python311\\\\python.exe", "C:\\\\Temp\\\\fake_cli.py"]',
+            windows=False,
+        )
+        self.assertEqual(
+            command,
+            (r"C:\Python311\python.exe", r"C:\Temp\fake_cli.py"),
+        )
+
     def test_command_runner_never_inherits_mcp_protocol_stdin(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch(
             "cerberus_re_skill.mcp_runtime.subprocess.run"

@@ -58,4 +58,6 @@ than long-run-agent mission memory.
 `cerberus-re` distribution version differs. `CERBERUS_MCP_STRICT_SURFACE=1`
 also runs Cerberus's strict command-surface preflight. Use `CERBERUS_BIN` only
 when the intended CLI cannot be reached through the server's Python
-environment.
+environment. It accepts a platform-native command string or, for unambiguous
+cross-platform paths, a JSON argument array such as
+`["python", "-m", "cerberus_re_skill"]`.

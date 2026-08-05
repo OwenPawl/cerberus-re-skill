@@ -39,7 +39,7 @@ class MCPSettings:
     @classmethod
     def from_env(cls) -> MCPSettings:
         override = os.environ.get("CERBERUS_BIN")
-        command = tuple(shlex.split(override)) if override else (
+        command = parse_command_override(override) if override else (
             sys.executable,
             "-m",
             "cerberus_re_skill",
@@ -68,6 +68,35 @@ class MCPSettings:
     def ensure_state(self) -> None:
         for directory in (self.workspace, self.state_dir, self.jobs_dir, self.job_archive_dir):
             directory.mkdir(parents=True, exist_ok=True)
+
+
+def parse_command_override(
+    value: str,
+    *,
+    windows: bool | None = None,
+) -> tuple[str, ...]:
+    """Parse CERBERUS_BIN without treating Windows path separators as escapes."""
+    text = value.strip()
+    if text.startswith("["):
+        parsed = json.loads(text)
+        if not isinstance(parsed, list) or not parsed or not all(
+            isinstance(part, str) and part for part in parsed
+        ):
+            raise ValueError("CERBERUS_BIN JSON must be a non-empty string array")
+        return tuple(parsed)
+
+    use_windows_rules = os.name == "nt" if windows is None else windows
+    parts = shlex.split(text, posix=not use_windows_rules)
+    if use_windows_rules:
+        parts = [
+            part[1:-1]
+            if len(part) >= 2 and part[0] == part[-1] and part[0] in {"'", '"'}
+            else part
+            for part in parts
+        ]
+    if not parts:
+        raise ValueError("CERBERUS_BIN must not be empty")
+    return tuple(parts)
 
 
 def envelope(
