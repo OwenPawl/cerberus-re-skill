@@ -18,7 +18,6 @@ from cerberus_re_skill.cli_runtime import (
     import_app,
     export_app,
     publish_app,
-    plugins_app,
     console,
     _die,
     _print_json,
@@ -130,11 +129,10 @@ def generate_xpc_harness_cmd(
 def bootstrap(
     skip_smoke_test: bool = typer.Option(False, "--skip-smoke-test", help="Skip analyzeHeadless smoke test."),
     skip_bridge_install: bool = typer.Option(False, "--skip-bridge-install", help="Skip bridge extension install."),
-    skip_plugins_install: bool = typer.Option(False, "--skip-plugins-install", help="Skip community plugin install (GhidraApple)."),
     no_write_config: bool = typer.Option(False, "--no-write-config", help="Do not write config file."),
     config_file: Optional[str] = typer.Option(None, "--config-file", help="Path to config file."),
 ) -> None:
-    """Detect Ghidra/JDK, create workspace, write config, install bridge + plugins."""
+    """Detect Ghidra/JDK, create the workspace, write config, and install the bridge."""
     from cerberus_re_skill.core.config import cfg
     from cerberus_re_skill.core.ghidra_locator import detect_ghidra_dir, detect_jdk_dir
 
@@ -191,29 +189,11 @@ def bootstrap(
         except Exception as e:
             _die(f"bridge install failed: {e}")
 
-    plugins_status_str = "skipped"
-    if not skip_plugins_install:
-        try:
-            from cerberus_re_skill.modules.plugins import install_ghidra_apple
-            result = install_ghidra_apple()
-            plugins_status_str = result.get("status", "installed")
-        except Exception as e:
-            # Non-fatal: plugins are useful but not required for basic operation.
-            plugins_status_str = f"failed ({e})"
-            console.print(f"[yellow]Warning:[/yellow] GhidraApple install failed: {e}")
-            console.print("[dim]Run 'cerberus-re plugins install' to retry.[/dim]")
-
     console.print(f"Skill root: {cfg.skill_root}")
     console.print(f"Ghidra: {detected_ghidra}")
     console.print(f"JDK: {detected_jdk}")
     console.print(f"Workspace: {workspace}")
     console.print(f"Bridge: {bridge_status}")
-    console.print(f"Plugins (GhidraApple): {plugins_status_str}")
-    if plugins_status_str in ("installed",):
-        console.print(
-            "[dim]Restart Ghidra and enable GhidraApple analyzers via "
-            "Analysis > Analyze All Open Files.[/dim]"
-        )
     console.print("[bold green]cerberus-re bootstrap complete[/bold green]")
 
 

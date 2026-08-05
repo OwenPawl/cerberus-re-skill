@@ -29,7 +29,9 @@ belongs in `long-run-agent`.
 
 ## Strongly Encouraged Companion Dependency
 
-Use Cerberus RE with `long-run-agent` for substantial reverse-engineering work.
+Use Cerberus RE with
+[`long-run-agent`](https://github.com/OwenPawl/long-run-agent-skill) for
+substantial reverse-engineering work.
 Cerberus RE provides the static, dynamic, and instrumentation workbench;
 `long-run-agent` preserves mission state, claims, artifacts, failures, friction,
 and next actions so longer investigations stay auditable and resumable.
@@ -59,6 +61,42 @@ If your system dependencies are already present:
 pip install -e .
 cerberus-re bootstrap
 ```
+
+Install the strongly encouraged mission companion when you want one unified
+local MCP server:
+
+```bash
+pip install git+https://github.com/OwenPawl/long-run-agent-skill.git
+pip install -e .
+cerberus-mcp
+```
+
+`cerberus-mcp` exposes first-class tools for the core Ghidra/LLDB/Frida loop,
+guarded runtime and bridge operations, restart-safe background jobs, and a
+bounded `cerberus_run` escape hatch. When long-run-agent is installed, the same
+server also composes its namespaced `mission_*` tools for durable control,
+claims, artifacts, friction, search, and closeout. Cerberus remains usable by
+itself for bounded work; `mission_companion_status` reports whether composition
+succeeded.
+
+Example local MCP client configuration:
+
+```json
+{
+  "mcpServers": {
+    "cerberus-re": {
+      "command": "/absolute/path/to/venv/bin/cerberus-mcp",
+      "env": {
+        "GHIDRA_WORKSPACE": "/absolute/path/to/ghidra-projects",
+        "CERBERUS_MCP_STRICT_SURFACE": "1"
+      }
+    }
+  }
+}
+```
+
+See [`references/mcp-server.md`](references/mcp-server.md) for the tool,
+approval, audit, and client contract.
 
 Optional skill install:
 
@@ -142,6 +180,7 @@ commands, claims, artifacts, failures, and metrics.
 
 - `SKILL.md`: agent-facing operating procedure.
 - `cerberus_re_skill/`: Python CLI and report builders.
+- `cerberus_re_skill/mcp_server.py`: local stdio MCP and optional mission-tool composition.
 - `scripts/`: installer, helper scripts, sourced shell libraries, and Ghidra Java scripts.
 - `bridge-extension/`: Ghidra bridge source.
 - `references/`: public command and artifact references.

@@ -26,6 +26,18 @@ def load_installer_module():
 
 
 class PublicReadinessTests(unittest.TestCase):
+    def test_obsolete_community_plugin_surface_is_removed(self) -> None:
+        removed_module = ROOT / "cerberus_re_skill" / "modules" / "plugins.py"
+        self.assertFalse(removed_module.exists())
+        result = subprocess.run(
+            [sys.executable, "-m", "cerberus_re_skill", "plugins", "--help"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("No such command", result.stdout + result.stderr)
+
     def test_dependency_installer_dry_run_json(self) -> None:
         result = subprocess.run(
             [
@@ -241,7 +253,6 @@ class PublicReadinessTests(unittest.TestCase):
                 (98, 117, 103, 45, 104, 117, 110, 116, 105, 110, 103),
                 (98, 111, 117, 110, 116, 121),
                 (101, 120, 112, 108, 111, 105, 116, 97, 98, 105, 108, 105, 116, 121),
-                (79, 119, 101, 110),
             )
         ]
         roots = [

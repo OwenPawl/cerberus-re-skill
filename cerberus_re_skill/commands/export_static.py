@@ -18,7 +18,6 @@ from cerberus_re_skill.cli_runtime import (
     import_app,
     export_app,
     publish_app,
-    plugins_app,
     console,
     _die,
     _print_json,

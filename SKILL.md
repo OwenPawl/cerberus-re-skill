@@ -9,16 +9,24 @@ Use this skill for local Apple-focused reverse engineering with a repeatable
 three-headed static/dynamic/instrumentation loop around Ghidra, LLDB, and
 Frida. The public CLI is `cerberus-re`.
 
-`long-run-agent` is a strongly encouraged companion dependency for substantial
-work. Use it to preserve mission state, claims, artifacts, failures, friction,
-and next actions while Cerberus RE handles static, dynamic, and instrumentation
-evidence. Cerberus RE can still run alone for bounded one-off tasks.
+[`long-run-agent`](https://github.com/OwenPawl/long-run-agent-skill) is a
+strongly encouraged companion dependency for substantial work. Use it to
+preserve mission state, claims, artifacts, failures, friction, and next actions
+while Cerberus RE handles static, dynamic, and instrumentation evidence.
+Cerberus RE can still run alone for bounded one-off tasks.
+
+When driving through MCP, prefer `cerberus-mcp`. It exposes the core RE loop
+and composes long-run-agent's namespaced `mission_*` tools into the same local
+stdio server when the companion package or installed skill is available. Check
+`mission_companion_status` before assuming durable mission tools exist.
 
 ## Operating Contract
 
 - Resolve the repo or installed skill root first. If working from this checkout,
   run commands from the repo root.
 - Prefer the Python CLI: `cerberus-re` or `python3 -m cerberus_re_skill`.
+- Prefer `cerberus-mcp` when the host supports MCP; use its typed envelope
+  status rather than parsing prose.
 - Keep generated evidence as JSON or Markdown artifacts, not terminal-only output.
 - Use durable workspace paths under `~/ghidra-projects`.
 - Preserve dirty worktree changes you did not make.
@@ -202,3 +210,4 @@ Read only the file needed for the current task:
 - `references/builtins.md`: built-in Ghidra script caveats.
 - `references/triage-outputs.md`: triage output details.
 - `references/triage-patterns.json`: triage heuristic categories.
+- `references/mcp-server.md`: local stdio tools, composition, gates, and audit behavior.

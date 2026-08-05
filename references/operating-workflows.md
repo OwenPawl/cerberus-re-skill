@@ -6,10 +6,7 @@ This file holds the workflow detail that should not live in `SKILL.md`.
 
 - Install with `pip install -e .` from the repo root.
 - Run `cerberus-re bootstrap` once per host.
-- Bootstrap installs the bridge extension and the GhidraApple community plugin
-  when possible.
-- After bootstrap, restart Ghidra and enable useful GhidraApple analyzers from
-  the GUI when a project needs ObjC/msgSend/block enrichment.
+- Bootstrap installs the Cerberus bridge extension unless explicitly skipped.
 - Use `cerberus-re doctor` when Ghidra, Java, Frida, or bridge state looks wrong.
 - On macOS, detached bridge launches use a hidden keeper session so Ghidra can
   survive after the launcher command exits.

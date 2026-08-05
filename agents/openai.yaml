@@ -1,13 +1,14 @@
 interface:
   display_name: "Cerberus RE"
   short_description: "Local Apple-focused RE workbench for a Ghidra, LLDB, and Frida loop"
-  default_prompt: "Use Cerberus RE to import this binary into Ghidra, export structured artifacts, and correlate static findings with LLDB or Frida evidence."
+  default_prompt: "Use Cerberus RE to import this binary into Ghidra, export structured artifacts, and correlate static findings with LLDB or Frida evidence. Prefer the unified cerberus-mcp server when available, using composed mission tools for durable state."
 
 policy:
   allow_implicit_invocation: true
 
 # Entry points (Python package – install with: pip install -e .)
 commands:
+  mcp_server: "cerberus-mcp"
   bootstrap: "python -m cerberus_re_skill bootstrap"
   doctor: "python -m cerberus_re_skill doctor"
   bridge_arm: "python -m cerberus_re_skill bridge arm"

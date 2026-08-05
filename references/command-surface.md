@@ -9,14 +9,16 @@ python3 -m cerberus_re_skill <command>
 
 ## Environment
 
+- `cerberus-mcp` starts the local stdio MCP server. With
+  [`long-run-agent`](https://github.com/OwenPawl/long-run-agent-skill)
+  installed, the server also exposes namespaced `mission_*` tools.
+
 - `python3 scripts/install_dependencies.py [--execute] [--json] [--venv <path>] [--skip-system] [--no-frida] [--no-node]`
 - `python3 scripts/agent_benchmark.py list [--json]`
 - `python3 scripts/agent_benchmark.py scaffold --runner <runner-id> --configuration <configuration-id> --output <bundle-dir> [--force]`
 - `python3 scripts/agent_benchmark.py validate --bundle <bundle-dir>`
-- `cerberus-re bootstrap [--skip-smoke-test] [--skip-plugins-install]`
+- `cerberus-re bootstrap [--skip-smoke-test] [--skip-bridge-install]`
 - `cerberus-re doctor [--frida-target <binary>]`
-- `cerberus-re plugins install ghidraapple`
-- `cerberus-re plugins status`
 - `cerberus-re source add <name> --root <path> [--platform macos-image] [--copy cache|direct]`
 - `cerberus-re source list`
 - `cerberus-re source resolve <name> </path/in/source> [--copy cache|direct] [--no-extract]`; `--no-extract` resolves direct files or already-extracted cache copies only and stops before invoking dyld shared cache extraction.
