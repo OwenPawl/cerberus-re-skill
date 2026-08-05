@@ -328,6 +328,13 @@ def run_worker(record_path: Path) -> int:
             finished_at=_timestamp(),
             result=envelope(FAILED, command=command, stderr=str(exc)),
         )
+    if os.name == "nt":
+        # Windows locks a process's current directory. Leave the workspace
+        # before publishing terminal state so callers can archive it immediately.
+        try:
+            os.chdir(Path.home())
+        except OSError:
+            pass
     _atomic_write(record_path, record)
     return 0 if record["status"] == "done" else 1
 
