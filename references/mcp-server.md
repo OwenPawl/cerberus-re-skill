@@ -50,7 +50,11 @@ Imports and optional triage jobs execute through detached worker processes.
 The worker owns the command logs and terminal record, so an MCP server restart
 does not discard a still-running job. `job_close` archives terminal state
 instead of deleting evidence. This execution state is intentionally narrower
-than long-run-agent mission memory.
+than long-run-agent mission memory. On Windows, Cerberus first requests Job
+Object breakaway and falls back to the local CIM process provider because MCP
+stdio clients may intentionally terminate the server's descendant Job Object.
+A launch is recorded as failed rather than claiming restart safety when neither
+independent path is available.
 
 ## Startup
 

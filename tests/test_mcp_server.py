@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from cerberus_re_skill.mcp_jobs import JobStore
+from cerberus_re_skill.mcp_jobs import JobStore, _spawn_windows_cim_worker
 from cerberus_re_skill.mcp_runtime import (
     CommandRunner,
     MCPSettings,
@@ -42,6 +42,25 @@ def test_settings(root: Path, cli_command: tuple[str, ...] | None = None) -> MCP
 
 
 class MCPRuntimeTests(unittest.TestCase):
+    def test_windows_cim_worker_returns_independent_pid(self) -> None:
+        completed = subprocess.CompletedProcess(
+            [], 0, b"CERBERUS_PID=4123\r\n", b""
+        )
+        with patch(
+            "cerberus_re_skill.mcp_jobs.shutil.which",
+            return_value=r"C:\Program Files\PowerShell\7\pwsh.exe",
+        ), patch(
+            "cerberus_re_skill.mcp_jobs.subprocess.run", return_value=completed
+        ) as run:
+            pid = _spawn_windows_cim_worker(
+                [r"C:\Python311\python.exe", "-m", "cerberus_re_skill.mcp_jobs"],
+                Path("."),
+            )
+
+        self.assertEqual(pid, 4123)
+        self.assertIn("-EncodedCommand", run.call_args.args[0])
+        self.assertIs(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+
     def test_command_override_preserves_windows_paths(self) -> None:
         command = parse_command_override(
             r'"C:\Program Files\Python\python.exe" C:\Temp\fake_cli.py',
