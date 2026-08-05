@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from cerberus_re_skill.mcp_jobs import JobStore, _spawn_windows_cim_worker
+from cerberus_re_skill.mcp_jobs import JobStore, _pid_alive, _spawn_windows_cim_worker
 from cerberus_re_skill.mcp_runtime import (
     CommandRunner,
     MCPSettings,
@@ -42,6 +42,17 @@ def test_settings(root: Path, cli_command: tuple[str, ...] | None = None) -> MCP
 
 
 class MCPRuntimeTests(unittest.TestCase):
+    def test_windows_pid_probe_does_not_use_posix_kill(self) -> None:
+        with patch("cerberus_re_skill.mcp_jobs.os.name", "nt"), patch(
+            "cerberus_re_skill.mcp_jobs._windows_pid_alive", return_value=True
+        ) as windows_probe, patch(
+            "cerberus_re_skill.mcp_jobs.os.kill"
+        ) as posix_kill:
+            self.assertTrue(_pid_alive(4123))
+
+        windows_probe.assert_called_once_with(4123)
+        posix_kill.assert_not_called()
+
     def test_windows_cim_worker_returns_independent_pid(self) -> None:
         completed = subprocess.CompletedProcess(
             [], 0, b"CERBERUS_PID=4123\r\n", b""
