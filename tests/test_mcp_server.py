@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -13,6 +14,7 @@ from unittest.mock import patch
 
 from cerberus_re_skill.mcp_jobs import JobStore
 from cerberus_re_skill.mcp_runtime import (
+    CommandRunner,
     MCPSettings,
     bridge_tier,
     classify,
@@ -39,6 +41,14 @@ def test_settings(root: Path, cli_command: tuple[str, ...] | None = None) -> MCP
 
 
 class MCPRuntimeTests(unittest.TestCase):
+    def test_command_runner_never_inherits_mcp_protocol_stdin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "cerberus_re_skill.mcp_runtime.subprocess.run"
+        ) as run:
+            run.return_value = subprocess.CompletedProcess([], 0, "{}", "")
+            CommandRunner(test_settings(Path(tmp))).run(["--help"])
+            self.assertIs(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+
     def test_json_recovery_ignores_trailing_rich_prose(self) -> None:
         value = parse_json_output('{"ok":true,"output":"/tmp/evidence"}\nWrote /tmp/evidence')
         self.assertEqual(value["output"], "/tmp/evidence")

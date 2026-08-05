@@ -149,6 +149,7 @@ class CommandRunner:
             process = subprocess.run(
                 command,
                 cwd=self.settings.workspace,
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
