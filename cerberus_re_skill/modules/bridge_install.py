@@ -77,6 +77,84 @@ def _bridge_installed_dir() -> Path | None:
     return settings / "Extensions" / "Ghidra" / "CodexGhidraBridge"
 
 
+def _xml_includes_plugin(path: Path, plugin_class: str) -> bool:
+    """Return whether a Ghidra tool configuration enables *plugin_class*."""
+    import xml.etree.ElementTree as ET
+
+    if not path.is_file():
+        return False
+    try:
+        root = ET.fromstring(path.read_text(encoding="utf-8"))
+    except (OSError, ET.ParseError):
+        return False
+    return any(
+        element.get("CLASS") == plugin_class
+        for element in root.iter("INCLUDE")
+    )
+
+
+def bridge_enablement_status() -> dict:
+    """Inspect installation and persistent Ghidra plugin enablement state."""
+    settings = bridge_settings_dir(cfg.ghidra_install_dir)
+    installed_dir = _bridge_installed_dir()
+    if settings is None:
+        return {
+            "installed": False,
+            "enabled": False,
+            "settings_dir": "",
+            "installed_dir": "",
+            "code_browser_enabled": False,
+            "frontend_enabled": False,
+            "code_browser_configs": [],
+            "frontend_config": "",
+        }
+
+    tools_dir = settings / "tools"
+    code_browser_configs = sorted(tools_dir.glob("_code_browser.tcd")) if tools_dir.exists() else []
+    frontend_config = settings / "FrontEndTool.xml"
+    code_browser_enabled = any(
+        _xml_includes_plugin(path, "codexghidrabridge.CodexBridgePlugin")
+        for path in code_browser_configs
+    )
+    frontend_enabled = _xml_includes_plugin(
+        frontend_config, "codexghidrabridge.CodexBridgeFrontEndPlugin"
+    )
+    installed = bool(installed_dir and installed_dir.is_dir())
+    return {
+        "installed": installed,
+        "enabled": installed and code_browser_enabled and frontend_enabled,
+        "settings_dir": str(settings),
+        "installed_dir": str(installed_dir or ""),
+        "code_browser_enabled": code_browser_enabled,
+        "frontend_enabled": frontend_enabled,
+        "code_browser_configs": [str(path) for path in code_browser_configs],
+        "frontend_config": str(frontend_config),
+    }
+
+
+def ensure_bridge_installed_and_enabled() -> dict:
+    """Install when absent and repair persistent plugin enablement when present."""
+    status = bridge_enablement_status()
+    if not status["installed"]:
+        install()
+        status = bridge_enablement_status()
+        status["action"] = "installed"
+        return status
+
+    settings = Path(status["settings_dir"])
+    tools_dir = settings / "tools"
+    if tools_dir.exists():
+        for tool_file in sorted(tools_dir.glob("*.tcd")):
+            _patch_tool_xml(tool_file)
+    frontend_config = settings / "FrontEndTool.xml"
+    if frontend_config.exists():
+        _patch_frontend_xml(frontend_config)
+
+    repaired = bridge_enablement_status()
+    repaired["action"] = "repaired" if not status["enabled"] else "unchanged"
+    return repaired
+
+
 def _clear_state_files() -> None:
     cfg.bridge_current_file.unlink(missing_ok=True)
     if cfg.bridge_requests_dir.exists():
@@ -95,10 +173,9 @@ def arm(project_name: str, program_name: str = "") -> dict:
     if not project_file.exists():
         raise RuntimeError(f"project {project_name} not found at {project_file}")
 
-    # Install bridge extension if needed
-    installed = _bridge_installed_dir()
-    if installed is None or not installed.exists():
-        install()
+    # Install the extension and repair persistent plugin enablement before launch.
+    enablement = ensure_bridge_installed_and_enabled()
+    ghidra_was_running = is_ghidra_running()
 
     # Check for an existing healthy session
     try:
@@ -114,7 +191,7 @@ def arm(project_name: str, program_name: str = "") -> dict:
     write_request_file("arm", "", project_name, program_name)
 
     # Wait if Ghidra is already running
-    if is_ghidra_running():
+    if ghidra_was_running:
         sf = wait_for_session(8, project_name, program_name)
         if sf:
             write_current_from_session_file(sf)
@@ -125,13 +202,38 @@ def arm(project_name: str, program_name: str = "") -> dict:
     _launch_gui_project(project_file)
     sf = wait_for_session(60, project_name, program_name)
     if not sf:
-        raise RuntimeError(
-            "timed out waiting for bridge session; open the project in Ghidra and "
-            "run EnableCodexBridge.java once if needed"
-        )
+        raise RuntimeError(_bridge_arm_timeout_diagnostic(enablement, ghidra_was_running))
     write_current_from_session_file(sf)
     url = _read_session_value(sf, "bridge_url")
     return {"ok": True, "bridge_url": url, "session_file": str(sf)}
+
+
+def _bridge_arm_timeout_diagnostic(enablement: dict, ghidra_was_running: bool) -> str:
+    """Explain an arm timeout without conflating installation and enablement."""
+    problems: list[str] = []
+    if not enablement.get("installed"):
+        problems.append("extension installation was not detected")
+    if not enablement.get("code_browser_enabled"):
+        problems.append("CodexBridgePlugin is not enabled in the Code Browser configuration")
+    if not enablement.get("frontend_enabled"):
+        problems.append("CodexBridgeFrontEndPlugin is not enabled in FrontEndTool.xml")
+
+    if problems:
+        return (
+            "timed out waiting for bridge session; CodexGhidraBridge enablement diagnostic: "
+            f"{'; '.join(problems)}. Run 'cerberus-re bridge install', then restart Ghidra."
+        )
+    if ghidra_was_running and enablement.get("action") == "repaired":
+        return (
+            "timed out waiting for bridge session; CodexGhidraBridge configuration was "
+            "auto-enabled, but Ghidra was already running and must be restarted to load it"
+        )
+    return (
+        "timed out waiting for bridge session; CodexGhidraBridge is installed and enabled "
+        "in persistent Ghidra configuration, but no live plugin session appeared. Restart "
+        "Ghidra and inspect the bridge launch log; run EnableCodexBridge.java once only as "
+        "a compatibility fallback"
+    )
 
 
 # ---------------------------------------------------------------------------

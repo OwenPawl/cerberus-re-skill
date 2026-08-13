@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cerberus_re_skill.core.config import cfg
-from cerberus_re_skill.modules.bridge import audit_bridge_state, call_bridge, close_bridge
+from cerberus_re_skill.modules.bridge import arm, audit_bridge_state, call_bridge, close_bridge
 from cerberus_re_skill.modules import bridge_install
 
 
@@ -214,10 +214,79 @@ class BridgeLifecycleTests(unittest.TestCase):
 
                 result = bridge_install.install()
 
+                current_file = cfg.bridge_current_file
+                pending_request = cfg.bridge_requests_dir / "pending.json"
+
             self.assertTrue(result["ok"])
-            self.assertFalse(cfg.bridge_current_file.exists())
-            self.assertFalse((cfg.bridge_requests_dir / "pending.json").exists())
+            self.assertFalse(current_file.exists())
+            self.assertFalse(pending_request.exists())
             self.assertTrue((settings / "Extensions" / "Ghidra" / "CodexGhidraBridge").exists())
+
+    def test_ensure_bridge_enabled_repairs_installed_extension_configs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = root / "settings"
+            installed = settings / "Extensions" / "Ghidra" / "CodexGhidraBridge"
+            installed.mkdir(parents=True)
+            tools = settings / "tools"
+            tools.mkdir(parents=True)
+            code_browser = tools / "_code_browser.tcd"
+            code_browser.write_text(
+                '<TOOL><PACKAGE NAME="Ghidra Core" /></TOOL>', encoding="utf-8"
+            )
+            frontend = settings / "FrontEndTool.xml"
+            frontend.write_text(
+                '<TOOL><PACKAGE NAME="Ghidra Core" /></TOOL>', encoding="utf-8"
+            )
+
+            with (
+                patch.object(cfg, "ghidra_install_dir", root / "Ghidra"),
+                patch(
+                    "cerberus_re_skill.modules.bridge_install.bridge_settings_dir",
+                    return_value=settings,
+                ),
+            ):
+                result = bridge_install.ensure_bridge_installed_and_enabled()
+
+            self.assertEqual(result["action"], "repaired")
+            self.assertTrue(result["enabled"])
+            self.assertIn("codexghidrabridge.CodexBridgePlugin", code_browser.read_text())
+            self.assertIn("codexghidrabridge.CodexBridgeFrontEndPlugin", frontend.read_text())
+
+    def test_arm_timeout_reports_disabled_bridge_plugin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "demo.gpr"
+            project.touch()
+            with (
+                patch.object(cfg, "bridge_config_dir", Path(tmp) / "bridge"),
+                patch.object(cfg, "bridge_sessions_dir", Path(tmp) / "bridge-sessions"),
+                patch.object(cfg, "bridge_requests_dir", Path(tmp) / "bridge-requests"),
+                patch.object(cfg, "bridge_current_file", Path(tmp) / "bridge-current.json"),
+                patch.object(cfg, "bridge_install_state_file", Path(tmp) / "bridge-install.json"),
+                patch.object(cfg, "project_file", return_value=project),
+                patch("cerberus_re_skill.modules.bridge_install.require_tools"),
+                patch("cerberus_re_skill.modules.bridge_install.ensure_workspace"),
+                patch("cerberus_re_skill.modules.bridge_install.prune_stale_sessions"),
+                patch("cerberus_re_skill.modules.bridge_install.resolve_session_file", side_effect=RuntimeError),
+                patch("cerberus_re_skill.modules.bridge_install.write_request_file"),
+                patch("cerberus_re_skill.modules.bridge_install.is_ghidra_running", return_value=False),
+                patch("cerberus_re_skill.modules.bridge_install._launch_gui_project"),
+                patch("cerberus_re_skill.modules.bridge_install.wait_for_session", return_value=None),
+                patch(
+                    "cerberus_re_skill.modules.bridge_install.ensure_bridge_installed_and_enabled",
+                    return_value={
+                        "installed": True,
+                        "enabled": False,
+                        "code_browser_enabled": False,
+                        "frontend_enabled": True,
+                        "action": "repaired",
+                    },
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "CodexBridgePlugin is not enabled in the Code Browser"
+                ):
+                    arm("demo", "Demo")
 
 
 if __name__ == "__main__":

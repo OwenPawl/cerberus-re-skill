@@ -76,6 +76,13 @@ The resolver classifies small helpers into categories such as `argshuffle`,
 Prefer the bridge for repeated search, navigation, decompile, refs, and careful
 project edits. Prefer headless exports for wide scans and cold project setup.
 
+`cerberus-re bridge arm` installs the extension when absent and repairs the
+persistent Code Browser and front-end plugin configuration when it is disabled.
+If Ghidra was already running when a repair was needed, restart Ghidra so the
+process loads the newly enabled plugin. An arm timeout distinguishes disabled
+configuration from an enabled installation that failed to create a live
+session.
+
 Useful endpoints include:
 
 - `/session`

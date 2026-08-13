@@ -66,6 +66,10 @@ Frida work and explicit launch/attach choices for LLDB work.
 - `cerberus-re bridge call <endpoint> [json_body|@json_file|-]`
 - `cerberus-re bridge close [--session <id>|--project <name>|--program <name>]`
 
+`bridge arm` installs a missing bridge and repairs disabled persistent plugin
+configuration before launching Ghidra. If that repair occurs while Ghidra is
+already running, restart Ghidra to load the plugin.
+
 ## RE Evidence Reports
 
 Generic long-running run state, control files, durable project memory, and agent
