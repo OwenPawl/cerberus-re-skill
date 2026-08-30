@@ -36,6 +36,15 @@ class BridgeProtocolSourceTests(unittest.TestCase):
         self.assertIn('"/inventory"', service)
         self.assertIn("writeApplicationInventory", frontend)
 
+    def test_java_and_python_share_the_modern_bridge_config_root(self) -> None:
+        identity = (JAVA_ROOT / "CodexBridgeIdentity.java").read_text(encoding="utf-8")
+        service = (JAVA_ROOT / "CodexBridgeService.java").read_text(encoding="utf-8")
+        frontend = (JAVA_ROOT / "CodexBridgeFrontEndPlugin.java").read_text(encoding="utf-8")
+        self.assertIn('System.getenv("GHIDRA_RE_CONFIG_HOME")', identity)
+        self.assertIn('"cerberus-re"', identity)
+        self.assertIn("CodexBridgeIdentity.configDirectory()", service)
+        self.assertIn("CodexBridgeIdentity.configDirectory()", frontend)
+
     def test_non_current_navigation_requires_explicit_activation(self) -> None:
         read_support = (JAVA_ROOT / "CodexBridgeReadSupport.java").read_text(encoding="utf-8")
         self.assertIn('optBoolean(body, "activate", false)', read_support)
@@ -84,6 +93,36 @@ class BridgeProtocolSourceTests(unittest.TestCase):
         self.assertNotIn("if (destructive && mutation != null)", mutation)
         self.assertIn('"cerberus.bridge.operation.v2"', mutation)
         self.assertIn('writeOperationLog(program, "program-save", body, mutation)', read_support)
+
+    def test_rename_and_inline_logs_have_canonical_replay_and_save_lineage(self) -> None:
+        mutation = (JAVA_ROOT / "CodexBridgeMutationSupport.java").read_text(
+            encoding="utf-8"
+        )
+        read_support = (JAVA_ROOT / "CodexBridgeReadSupport.java").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('return "/edit/rename"', mutation)
+        self.assertIn('return "/edit/function-signature"', mutation)
+        self.assertIn('descriptor.addProperty("semantics", "set-final-state")', mutation)
+        self.assertIn('target.addProperty("expected_executable_sha256"', mutation)
+        self.assertIn('variableRef.remove("name")', mutation)
+        self.assertIn('replayBody.addProperty("address", address)', mutation)
+        self.assertIn(
+            'result.getAsJsonObject().add("bridge_operation", operation)', mutation
+        )
+        self.assertIn('"covered_operation_ids"', read_support)
+
+    def test_program_save_waits_boundedly_for_analysis_transactions(self) -> None:
+        read_support = (JAVA_ROOT / "CodexBridgeReadSupport.java").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("SAVE_QUIESCENCE_TIMEOUT_MILLIS = 5_000", read_support)
+        self.assertIn("program.getCurrentTransactionInfo()", read_support)
+        self.assertIn("ACTIVE_TRANSACTION_SAVE_ERROR.equals", read_support)
+        self.assertIn("SAVE_DURING_TRANSACTION_ERROR.equals", read_support)
+        self.assertIn("new BridgeException(409", read_support)
+        self.assertIn('result.addProperty("save_attempts"', read_support)
+        self.assertIn('result.addProperty("save_wait_millis"', read_support)
 
 
 if __name__ == "__main__":

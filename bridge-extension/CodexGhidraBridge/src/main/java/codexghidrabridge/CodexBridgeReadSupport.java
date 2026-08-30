@@ -58,6 +58,7 @@ import ghidra.app.plugin.assembler.Assembler;
 import ghidra.app.plugin.assembler.Assemblers;
 import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.ProjectLocator;
+import ghidra.framework.model.TransactionInfo;
 import ghidra.program.flatapi.FlatProgramAPI;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressRange;
@@ -117,6 +118,22 @@ import ghidra.util.task.TaskMonitor;
 
 
 abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
+	private static final long SAVE_QUIESCENCE_TIMEOUT_MILLIS = 5_000;
+	private static final long SAVE_QUIESCENCE_POLL_MILLIS = 25;
+	private static final String ACTIVE_TRANSACTION_SAVE_ERROR =
+		"Unable to lock due to active transaction";
+	private static final String SAVE_DURING_TRANSACTION_ERROR =
+		"Can't save during transaction";
+
+	private static final class SaveAttempt {
+		private final int attempts;
+		private final long waitMillis;
+
+		SaveAttempt(int attempts, long waitMillis) {
+			this.attempts = attempts;
+			this.waitMillis = waitMillis;
+		}
+	}
 
 	CodexBridgeReadSupport(CodexBridgePlugin plugin, CodexBridgeProvider provider) {
 		super(plugin, provider);
@@ -688,6 +705,47 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 		return result;
 	}
 
+	private SaveAttempt saveWhenQuiescent(Program program, String description) throws Exception {
+		long startedNanos = System.nanoTime();
+		long deadlineNanos = startedNanos + SAVE_QUIESCENCE_TIMEOUT_MILLIS * 1_000_000L;
+		long waitNanos = 0;
+		int attempts = 0;
+		String activeTransaction = "unknown";
+		while (true) {
+			TransactionInfo transactionInfo = program.getCurrentTransactionInfo();
+			if (transactionInfo == null) {
+				attempts++;
+				try {
+					program.save(description, TaskMonitor.DUMMY);
+					return new SaveAttempt(attempts, waitNanos / 1_000_000L);
+				}
+				catch (Exception e) {
+					if (!ACTIVE_TRANSACTION_SAVE_ERROR.equals(e.getMessage()) &&
+						!SAVE_DURING_TRANSACTION_ERROR.equals(e.getMessage())) {
+						throw e;
+					}
+				}
+			}
+			else {
+				activeTransaction = transactionInfo.getDescription();
+			}
+			if (System.nanoTime() >= deadlineNanos) {
+				throw new BridgeException(409,
+					"program save timed out waiting for active transaction: " + activeTransaction);
+			}
+			try {
+				long waitStartedNanos = System.nanoTime();
+				Thread.sleep(SAVE_QUIESCENCE_POLL_MILLIS);
+				waitNanos += System.nanoTime() - waitStartedNanos;
+			}
+			catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				throw new BridgeException(503,
+					"program save interrupted while waiting for active transaction");
+			}
+		}
+	}
+
 	protected JsonElement handleProgramSave(JsonObject body) throws Exception {
 		Program program = requireProgram(body);
 		requireWriteFlags(body, false);
@@ -697,10 +755,14 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 		if (description.isEmpty()) {
 			description = "CodexBridge: program-save";
 		}
+		SaveAttempt saveAttempt = new SaveAttempt(0, 0);
 		try {
 			if (before.canSave && before.changed) {
-				program.save(description, TaskMonitor.DUMMY);
+				saveAttempt = saveWhenQuiescent(program, description);
 			}
+		}
+		catch (BridgeException e) {
+			throw e;
 		}
 		catch (Exception e) {
 			throw new BridgeException(500, "program save failed: " + e.getMessage());
@@ -713,15 +775,18 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 		result.addProperty("changed_before", before.changed);
 		result.addProperty("changed_after", after.changed);
 		result.addProperty("description", description);
+		result.addProperty("save_attempts", saveAttempt.attempts);
+		result.addProperty("save_wait_millis", saveAttempt.waitMillis);
 		result.addProperty("program_id", CodexBridgeIdentity.programId(plugin.getTool(), program));
 		result.addProperty("program_version", program.getModificationNumber());
+		result.add("covered_operation_ids", operationIdsSincePriorSave(program));
 		result.add("repository", repositoryToJson(after));
 		MutationResult mutation = new MutationResult();
 		mutation.before = repositoryToJson(before);
 		mutation.result = result.deepCopy();
 		mutation.targets.add(CodexBridgeIdentity.programToJson(plugin.getTool(), program,
 			program == plugin.getCurrentProgram()));
-		writeOperationLog(program, "program-save", body, mutation);
+		result.add("bridge_operation", writeOperationLog(program, "program-save", body, mutation));
 		return result;
 	}
 }

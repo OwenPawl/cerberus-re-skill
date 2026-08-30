@@ -55,8 +55,7 @@ public class CodexBridgeFrontEndPlugin extends Plugin implements ApplicationLeve
 
 	public CodexBridgeFrontEndPlugin(PluginTool tool) {
 		super(tool);
-		this.configDir =
-			new File(new File(System.getProperty("user.home"), ".config"), "ghidra-re");
+		this.configDir = CodexBridgeIdentity.configDirectory();
 		this.requestsDir = new File(configDir, "bridge-requests");
 		this.legacyControlFile = new File(configDir, "bridge-control.json");
 	}

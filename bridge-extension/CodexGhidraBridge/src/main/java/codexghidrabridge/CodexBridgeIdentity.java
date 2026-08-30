@@ -47,6 +47,16 @@ final class CodexBridgeIdentity {
 		return APPLICATION_ID;
 	}
 
+	static File configDirectory() {
+		String configured = System.getenv("GHIDRA_RE_CONFIG_HOME");
+		if (configured != null && !configured.isBlank()) {
+			return new File(configured).getAbsoluteFile();
+		}
+		return new File(
+			new File(System.getProperty("user.home"), ".config"),
+			"cerberus-re");
+	}
+
 	static synchronized String toolId(PluginTool tool) {
 		return TOOL_IDS.computeIfAbsent(tool, ignored -> UUID.randomUUID().toString());
 	}

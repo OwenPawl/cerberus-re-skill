@@ -167,7 +167,7 @@ class CodexBridgeService extends CodexBridgeReadSupport {
 
 	CodexBridgeService(CodexBridgePlugin plugin, CodexBridgeProvider provider) {
 		super(plugin, provider);
-		this.configDir = new File(new File(System.getProperty("user.home"), ".config"), "ghidra-re");
+		this.configDir = CodexBridgeIdentity.configDirectory();
 		this.sessionsDir = new File(configDir, "bridge-sessions");
 		this.requestsDir = new File(configDir, "bridge-requests");
 		this.legacyControlFile = new File(configDir, "bridge-control.json");

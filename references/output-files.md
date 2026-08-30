@@ -43,11 +43,26 @@ agent closeout orchestration.
 
 Bridge files live under:
 
+- `~/.config/cerberus-re/bridge-applications/`
 - `~/.config/cerberus-re/bridge-sessions/`
 - `~/.config/cerberus-re/bridge-current.json`
 - `~/.config/cerberus-re/bridge-requests/`
 - `~/ghidra-projects/logs/<project_name>/bridge-ops/`
 - `~/ghidra-projects/logs/<project_name>/script-*.routing.json`
+
+Set `GHIDRA_RE_CONFIG_HOME` to move the entire bridge discovery/control root.
+The Python client, Ghidra front-end helper, and live bridge all resolve this
+override and otherwise use `~/.config/cerberus-re`; the legacy
+`~/.config/ghidra-re` root is not written.
+
+Every successful mutation returns a `bridge_operation` receipt and writes an
+immutable operation record. Rename and function-signature records include a
+canonical, set-final-state `replay` request bound to the program path and
+executable SHA-256. Operations without a safe replay contract record
+`replay.supported=false` rather than inventing one. `/program/save` returns
+`covered_operation_ids` for mutations since the prior save, plus
+`save_attempts` and `save_wait_millis`; the bridge waits boundedly for Ghidra
+analysis transactions and returns HTTP 409 if they do not quiesce.
 
 Operational rule: if a command emits evidence that supports a claim, keep the
 JSON or Markdown file path with the claim. Terminal-only observations are not
