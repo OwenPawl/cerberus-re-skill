@@ -629,44 +629,34 @@ ghidra_re_acquire_headless_lock() {
   local operation="${2:-headless}"
   local timeout_s="${GHIDRA_HEADLESS_LOCK_TIMEOUT:-600}"
   local stale_s="${GHIDRA_HEADLESS_LOCK_STALE_SECONDS:-1800}"
-  local lock_dir=""
-  local start_s=""
-  local now_s=""
-  local mtime_s=""
-  lock_dir="$(ghidra_re_headless_lock_path "$project_name")"
-  mkdir -p "$(dirname "$lock_dir")"
-  start_s="$(date +%s)"
-  while ! mkdir "$lock_dir" 2>/dev/null; do
-    now_s="$(date +%s)"
-    mtime_s="$(ghidra_re_stat_mtime "$lock_dir")"
-    if [[ "$mtime_s" =~ ^[0-9]+$ && $((now_s - mtime_s)) -ge "$stale_s" ]]; then
-      rm -rf "$lock_dir"
-      continue
-    fi
-    if [[ $((now_s - start_s)) -ge "$timeout_s" ]]; then
-      ghidra_re_die "timed out waiting for Ghidra headless project lock at $lock_dir; avoid running same-project headless operations in parallel"
-    fi
-    sleep 1
-  done
-  "$(ghidra_re_python)" - "$lock_dir" "$project_name" "$operation" "$(ghidra_re_project_location "$project_name")" <<'PY'
-import json, os, pathlib, sys, datetime
-lock_dir, project, operation, project_location = sys.argv[1:5]
-payload = {
-    "project_name": project,
-    "project_location": project_location,
-    "operation": operation,
-    "pid": os.getpid(),
-    "created_at": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-}
-pathlib.Path(lock_dir, "owner.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+  PYTHONPATH="$GHIDRA_RE_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$(ghidra_re_python)" - \
+    "$project_name" "$operation" "$(ghidra_re_project_location "$project_name")" \
+    "$timeout_s" "$stale_s" "$$" <<'PY'
+import sys
+from cerberus_re_skill.modules.headless_lock import acquire_project_headless_lock
+
+project, operation, project_location, timeout_s, stale_s, owner_pid = sys.argv[1:7]
+path = acquire_project_headless_lock(
+    project,
+    project_location,
+    operation=operation,
+    timeout_seconds=int(timeout_s),
+    stale_seconds=int(stale_s),
+    owner_pid=int(owner_pid),
+)
+print(path, end="")
 PY
-  printf '%s' "$lock_dir"
 }
 
 ghidra_re_release_headless_lock() {
   local lock_dir="${1:-}"
   [[ -n "$lock_dir" ]] || return 0
-  rm -rf "$lock_dir"
+  PYTHONPATH="$GHIDRA_RE_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$(ghidra_re_python)" - "$lock_dir" "$$" <<'PY'
+import sys
+from cerberus_re_skill.modules.headless_lock import release_project_headless_lock
+
+release_project_headless_lock(sys.argv[1], owner_pid=int(sys.argv[2]))
+PY
 }
 
 ghidra_re_log_dir() {
