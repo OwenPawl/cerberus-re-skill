@@ -565,7 +565,7 @@ abstract class CodexBridgeMutationSupport extends CodexBridgeResolveSupport {
 
 	protected JsonElement executeMutation(String opName, JsonObject body, boolean destructive,
 			MutationAction action) throws Exception {
-		Program program = requireProgram();
+		Program program = requireProgram(body);
 		requireWriteFlags(body, destructive);
 		ensureWritable(program);
 
@@ -582,15 +582,15 @@ abstract class CodexBridgeMutationSupport extends CodexBridgeResolveSupport {
 		}
 		plugin.incrementState(opName);
 		updateSessionIfArmed();
-		if (destructive && mutation != null) {
-			writeOperationLog(opName, body, mutation);
+		if (mutation != null) {
+			writeOperationLog(program, opName, body, mutation);
 		}
 		return mutation == null ? JsonNull.INSTANCE : mutation.result;
 	}
 
-	protected void writeOperationLog(String opName, JsonObject request, MutationResult mutation) {
+	protected void writeOperationLog(Program program, String opName, JsonObject request,
+			MutationResult mutation) {
 		try {
-			Program program = plugin.getCurrentProgram();
 			RepositoryState repository = repositoryStateFor(program);
 			String projectName = repository.projectName.isEmpty() ? "unknown-project" : repository.projectName;
 			File logDir =
@@ -599,10 +599,14 @@ abstract class CodexBridgeMutationSupport extends CodexBridgeResolveSupport {
 			if (!logDir.exists()) {
 				logDir.mkdirs();
 			}
-			File output =
-				new File(logDir, DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(java.time.ZoneId.systemDefault()).format(Instant.now()) +
-					"-" + slug(opName) + ".json");
+			String operationId = UUID.randomUUID().toString();
+			File output = new File(logDir,
+				DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS")
+					.withZone(java.time.ZoneId.systemDefault()).format(Instant.now()) +
+					"-" + slug(opName) + "-" + operationId + ".json");
 			JsonObject payload = new JsonObject();
+			payload.addProperty("schema_version", "cerberus.bridge.operation.v2");
+			payload.addProperty("operation_id", operationId);
 			payload.addProperty("operation_kind", opName);
 			payload.add("request_body", request.deepCopy());
 			payload.add("before_state", mutation.before == null ? JsonNull.INSTANCE : mutation.before.deepCopy());
@@ -611,6 +615,11 @@ abstract class CodexBridgeMutationSupport extends CodexBridgeResolveSupport {
 			payload.add("target_refs", mutation.targets.deepCopy());
 			payload.add("inverse", mutation.inverse.deepCopy());
 			payload.addProperty("tool_name", plugin.getTool().getToolName());
+			payload.addProperty("application_id", plugin.getApplicationId());
+			payload.addProperty("tool_id", plugin.getToolId());
+			payload.addProperty("session_id", plugin.getSessionId());
+			payload.addProperty("program_id",
+				CodexBridgeIdentity.programId(plugin.getTool(), program));
 			payload.addProperty("program_path", repository.domainPath);
 			payload.addProperty("project_path", repository.projectMarkerPath);
 			payload.addProperty("pid", ProcessHandle.current().pid());

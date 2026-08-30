@@ -156,6 +156,34 @@ def bridge_sessions() -> None:
     _print_json(sessions)
 
 
+@bridge_app.command("inventory")
+def bridge_inventory_cmd() -> None:
+    """List Ghidra applications, tools, and open programs with stable handles."""
+    from cerberus_re_skill.modules.bridge import bridge_inventory
+
+    _print_json(bridge_inventory())
+
+
+@bridge_app.command("open")
+def bridge_open_program_cmd(
+    project: str = typer.Argument(..., help="Ghidra project name."),
+    program: str = typer.Argument(..., help="Program name or full domain path."),
+    tool_id: str = typer.Option(..., "--tool-id", help="Stable target tool ID from inventory."),
+    application_id: str = typer.Option("", "--application-id", help="Optional owning app ID."),
+) -> None:
+    """Open a program in one explicit tool without changing its current program."""
+    from cerberus_re_skill.modules.bridge import open_program_in_tool
+
+    _print_json(
+        open_program_in_tool(
+            project,
+            program,
+            tool_id,
+            application_id=application_id,
+        )
+    )
+
+
 @bridge_app.command("audit")
 def bridge_audit() -> None:
     """Report raw bridge session files, stale state, and Ghidra JVMs."""

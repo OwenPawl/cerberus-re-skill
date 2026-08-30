@@ -122,6 +122,7 @@ class CodexBridgeService extends CodexBridgeReadSupport {
 	private static final List<String> CAPABILITIES = Collections.unmodifiableList(Arrays.asList(
 		"/health",
 		"/session",
+		"/inventory",
 		"/context",
 		"/analyze/target",
 		"/functions/search",
@@ -277,6 +278,10 @@ class CodexBridgeService extends CodexBridgeReadSupport {
 		return program.getName() + " [" + domainFile.getPathname() + "]";
 	}
 
+	String getSessionId() {
+		return sessionId;
+	}
+
 	private void ensureConfigDir() throws IOException {
 		if (!configDir.exists() && !configDir.mkdirs()) {
 			throw new IOException("failed to create " + configDir);
@@ -294,8 +299,11 @@ class CodexBridgeService extends CodexBridgeReadSupport {
 		ensureConfigDir();
 		RepositoryState repository = repositoryStateFor(plugin.getCurrentProgram());
 		JsonObject session = new JsonObject();
-		session.addProperty("version", 1);
+		session.addProperty("version", 2);
+		session.addProperty("schema_version", CodexBridgeIdentity.SCHEMA_VERSION);
 		session.addProperty("session_id", sessionId);
+		session.addProperty("application_id", plugin.getApplicationId());
+		session.addProperty("tool_id", plugin.getToolId());
 		session.addProperty("bridge_url", bridgeUrl);
 		session.addProperty("token", token);
 		session.addProperty("pid", ProcessHandle.current().pid());
@@ -304,6 +312,9 @@ class CodexBridgeService extends CodexBridgeReadSupport {
 		session.addProperty("project_path", repository.projectMarkerPath);
 		session.addProperty("program_name", repository.programName);
 		session.addProperty("program_path", repository.domainPath);
+		session.addProperty("current_program_id",
+			CodexBridgeIdentity.programId(plugin.getTool(), plugin.getCurrentProgram()));
+		session.add("open_programs", CodexBridgeIdentity.openProgramsToJson(plugin.getTool()));
 		session.addProperty("started_at", startedAt);
 		session.addProperty("last_heartbeat", DateTimeFormatter.ISO_INSTANT.format(Instant.now()));
 		session.addProperty("armed", armed);
@@ -423,6 +434,9 @@ class CodexBridgeService extends CodexBridgeReadSupport {
 			log("request failed " + path + ": " + e.getMessage());
 			sendJson(exchange, 500, null, e.toString());
 		}
+		finally {
+			clearRequestProgram();
+		}
 	}
 
 	private JsonElement dispatch(String path, JsonObject body) throws Exception {
@@ -431,6 +445,8 @@ class CodexBridgeService extends CodexBridgeReadSupport {
 				return handleHealth();
 			case "/session":
 				return handleSession();
+			case "/inventory":
+				return handleInventory();
 			case "/context":
 				return handleContext();
 			case "/analyze/target":

@@ -610,6 +610,24 @@ def create_server(settings: MCPSettings | None = None) -> FastMCP:
         return runner.wrap(runner.run(["bridge", "sessions"], timeout=60))
 
     @server.tool()
+    def bridge_inventory() -> dict[str, Any]:
+        """List Ghidra applications, tools, and open programs with stable handles."""
+        return runner.wrap(runner.run(["bridge", "inventory"], timeout=60))
+
+    @server.tool()
+    def bridge_open_program(
+        project: str,
+        program: str,
+        tool_id: str,
+        application_id: str = "",
+    ) -> dict[str, Any]:
+        """Open a program in one explicit live Ghidra tool without selecting it."""
+        args = ["bridge", "open", project, program, "--tool-id", tool_id]
+        if application_id:
+            args.extend(["--application-id", application_id])
+        return runner.wrap(runner.run(args, timeout=90))
+
+    @server.tool()
     def bridge_status(body: dict[str, Any] | None = None) -> dict[str, Any]:
         """Read bridge status for an optional session/project/program selector."""
         payload = json.dumps(body or {}, separators=(",", ":"))

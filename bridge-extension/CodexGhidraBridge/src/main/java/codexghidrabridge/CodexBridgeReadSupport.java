@@ -127,6 +127,8 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 		result.addProperty("armed", armed);
 		result.addProperty("bridge_url", bridgeUrl);
 		result.addProperty("state_version", plugin.getStateVersion());
+		result.addProperty("application_id", plugin.getApplicationId());
+		result.addProperty("tool_id", plugin.getToolId());
 		return result;
 	}
 
@@ -134,11 +136,26 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 		JsonObject result = new JsonObject();
 		result.addProperty("armed", armed);
 		result.addProperty("session_id", sessionId);
+		result.addProperty("schema_version", CodexBridgeIdentity.SCHEMA_VERSION);
+		result.addProperty("application_id", plugin.getApplicationId());
+		result.addProperty("tool_id", plugin.getToolId());
 		result.addProperty("bridge_url", bridgeUrl);
 		result.addProperty("tool_name", plugin.getTool().getToolName());
 		result.addProperty("started_at", startedAt);
 		result.add("repository", repositoryToJson(repositoryStateFor(plugin.getCurrentProgram())));
 		result.add("current_context", handleContext());
+		result.add("inventory", handleInventory());
+		return result;
+	}
+
+	protected JsonObject handleInventory() {
+		JsonObject result = new JsonObject();
+		result.addProperty("schema_version", CodexBridgeIdentity.SCHEMA_VERSION);
+		result.addProperty("application_id", plugin.getApplicationId());
+		result.addProperty("tool_id", plugin.getToolId());
+		result.addProperty("tool_name", plugin.getTool().getToolName());
+		result.addProperty("state_version", plugin.getStateVersion());
+		result.add("open_programs", CodexBridgeIdentity.openProgramsToJson(plugin.getTool()));
 		return result;
 	}
 
@@ -147,6 +164,8 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 		Program program = plugin.getCurrentProgram();
 		result.addProperty("has_program", program != null);
 		if (program != null) {
+			result.addProperty("program_id", CodexBridgeIdentity.programId(plugin.getTool(), program));
+			result.addProperty("program_version", program.getModificationNumber());
 			result.addProperty("program_name", program.getName());
 			result.addProperty("program_path", programPath(program));
 			result.addProperty("executable_path", empty(program.getExecutablePath()));
@@ -173,7 +192,7 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 	}
 
 	protected JsonElement handleAnalyzeTarget(JsonObject body) throws Exception {
-		Program program = requireProgram();
+		Program program = requireProgram(body);
 		boolean navigate = optBoolean(body, "navigate", true);
 		boolean hasExplicitTarget = optObject(body, "function_ref") != null ||
 			hasAny(body, "address", "entry", "start", "function", "function_name");
@@ -217,11 +236,13 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 			throw new BridgeException(404, "unable to resolve analysis target");
 		}
 		if (navigate) {
-			if (!plugin.navigateTo(address)) {
-				throw new BridgeException(500, "failed to navigate to " + address);
+			boolean activate = optBoolean(body, "activate", false);
+			if (!plugin.navigateTo(program, address, activate)) {
+				throw new BridgeException(program == plugin.getCurrentProgram() ? 500 : 409,
+					"target is not current; pass activate=true to change the selected program");
 			}
 		}
-		JsonObject targetBody = new JsonObject();
+		JsonObject targetBody = requestForProgram(new JsonObject(), program);
 		targetBody.addProperty("address", address.toString());
 		if (function != null) {
 			targetBody.add("function_ref", functionRef(function));
@@ -238,13 +259,13 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 	}
 
 	protected JsonElement handleFunction(JsonObject body) throws Exception {
-		Program program = requireProgram();
+		Program program = requireProgram(body);
 		Function function = resolveFunction(program, body);
 		return functionToJson(function, true);
 	}
 
 	protected JsonElement handleFunctionSearch(JsonObject body) throws Exception {
-		Program program = requireProgram();
+		Program program = requireProgram(body);
 		String query = optString(body, "query", "name", "function", "function_name");
 		if (query.isEmpty()) {
 			throw new BridgeException(400, "missing query");
@@ -307,7 +328,7 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 	}
 
 	protected JsonElement handleObjcSelectorTrace(JsonObject body) throws Exception {
-		Program program = requireProgram();
+		Program program = requireProgram(body);
 		String selector = optString(body, "selector", "query", "name");
 		if (selector.isEmpty()) {
 			throw new BridgeException(400, "missing selector");
@@ -387,7 +408,7 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 	}
 
 	protected JsonElement handleDecompile(JsonObject body) throws Exception {
-		Program program = requireProgram();
+		Program program = requireProgram(body);
 		Function function = resolveFunction(program, body, true);
 		if (function == null) {
 			Address address = resolveExactAddress(program, body, true);
@@ -454,7 +475,7 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 	}
 
 	protected JsonElement handleReferences(JsonObject body) throws Exception {
-		Program program = requireProgram();
+		Program program = requireProgram(body);
 		JsonObject result = new JsonObject();
 		boolean rawAddressRequested = hasExplicitAddressSelector(body);
 		Function function = null;
@@ -504,7 +525,7 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 	}
 
 	protected JsonElement handleDataGet(JsonObject body) throws Exception {
-		Program program = requireProgram();
+		Program program = requireProgram(body);
 		Address address = resolveExactAddress(program, body, false);
 		Data data = program.getListing().getDefinedDataContaining(address);
 		if (data == null) {
@@ -516,7 +537,7 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 	}
 
 	protected JsonElement handleStringsSearch(JsonObject body) throws Exception {
-		Program program = requireProgram();
+		Program program = requireProgram(body);
 		String query = optString(body, "query", "value", "string");
 		if (query.isEmpty()) {
 			throw new BridgeException(400, "missing query");
@@ -554,7 +575,7 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 	}
 
 	protected JsonElement handleSymbolsGet(JsonObject body) throws Exception {
-		Program program = requireProgram();
+		Program program = requireProgram(body);
 		List<Symbol> symbols = resolveSymbols(program, body, false);
 		JsonObject result = new JsonObject();
 		JsonArray matches = new JsonArray();
@@ -570,7 +591,7 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 	}
 
 	protected JsonElement handleSymbolXrefs(JsonObject body) throws Exception {
-		Program program = requireProgram();
+		Program program = requireProgram(body);
 		List<Symbol> symbols = resolveSymbols(program, body, false);
 		Symbol symbol = symbols.get(0);
 		JsonObject result = new JsonObject();
@@ -583,7 +604,7 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 	}
 
 	protected JsonElement handleMemoryRange(JsonObject body) throws Exception {
-		Program program = requireProgram();
+		Program program = requireProgram(body);
 		Address start = resolveExactAddress(program, body, false);
 		Address end = resolveEndAddress(program, body, start);
 		long lengthLong = end.subtract(start) + 1L;
@@ -607,7 +628,7 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 	}
 
 	protected JsonElement handleVariables(JsonObject body) throws Exception {
-		Program program = requireProgram();
+		Program program = requireProgram(body);
 		Function function = resolveFunction(program, body);
 		JsonObject result = new JsonObject();
 		result.add("function_ref", functionRef(function));
@@ -626,7 +647,7 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 	}
 
 	protected JsonElement handleDatatypeSearch(JsonObject body) throws Exception {
-		Program program = requireProgram();
+		Program program = requireProgram(body);
 		String query = optString(body, "query", "name", "type");
 		if (query.isEmpty()) {
 			throw new BridgeException(400, "missing query");
@@ -654,10 +675,12 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 	}
 
 	protected JsonElement handleNavigate(JsonObject body) throws Exception {
-		Program program = requireProgram();
+		Program program = requireProgram(body);
 		Address address = resolveAddress(program, body, false);
-		if (!plugin.navigateTo(address)) {
-			throw new BridgeException(500, "failed to navigate to " + address);
+		boolean activate = optBoolean(body, "activate", false);
+		if (!plugin.navigateTo(program, address, activate)) {
+			throw new BridgeException(program == plugin.getCurrentProgram() ? 500 : 409,
+				"target is not current; pass activate=true to change the selected program");
 		}
 		JsonObject result = new JsonObject();
 		result.add("location_ref", locationRef(program, address));
@@ -666,7 +689,7 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 	}
 
 	protected JsonElement handleProgramSave(JsonObject body) throws Exception {
-		Program program = requireProgram();
+		Program program = requireProgram(body);
 		requireWriteFlags(body, false);
 		ensureWritable(program);
 		RepositoryState before = repositoryStateFor(program);
@@ -690,7 +713,15 @@ abstract class CodexBridgeReadSupport extends CodexBridgeMutationSupport {
 		result.addProperty("changed_before", before.changed);
 		result.addProperty("changed_after", after.changed);
 		result.addProperty("description", description);
+		result.addProperty("program_id", CodexBridgeIdentity.programId(plugin.getTool(), program));
+		result.addProperty("program_version", program.getModificationNumber());
 		result.add("repository", repositoryToJson(after));
+		MutationResult mutation = new MutationResult();
+		mutation.before = repositoryToJson(before);
+		mutation.result = result.deepCopy();
+		mutation.targets.add(CodexBridgeIdentity.programToJson(plugin.getTool(), program,
+			program == plugin.getCurrentProgram()));
+		writeOperationLog(program, "program-save", body, mutation);
 		return result;
 	}
 }

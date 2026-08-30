@@ -6,8 +6,18 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cerberus_re_skill.core.config import cfg
-from cerberus_re_skill.modules.bridge import arm, audit_bridge_state, call_bridge, close_bridge
+from cerberus_re_skill.modules.bridge import (
+    arm,
+    audit_bridge_state,
+    bridge_inventory,
+    call_bridge,
+    close_bridge,
+    open_program_in_tool,
+    resolve_session_file,
+    write_request_file,
+)
 from cerberus_re_skill.modules import bridge_install
+from cerberus_re_skill.core.utils import utc_now
 
 
 class _FakeResponse:
@@ -70,6 +80,25 @@ class BridgeCallErrorTests(unittest.TestCase):
         self.assertIn("...[truncated]", message)
         self.assertLess(len(message), 1100)
 
+    def test_target_program_id_is_used_for_session_routing(self) -> None:
+        response = _FakeResponse(200, '{"ok":true}', {"ok": True})
+        with (
+            patch(
+                "cerberus_re_skill.modules.bridge_runtime.resolve_session_file",
+                return_value=Path("/tmp/session.json"),
+            ) as resolve,
+            patch("cerberus_re_skill.modules.bridge_runtime.session_healthy", return_value=True),
+            patch("cerberus_re_skill.modules.bridge_runtime._read_session_value") as read_value,
+            patch("cerberus_re_skill.modules.bridge_runtime.requests.post", return_value=response),
+        ):
+            read_value.side_effect = lambda _path, key: {
+                "bridge_url": "http://127.0.0.1:12345",
+                "token": "secret",
+            }[key]
+            call_bridge("/function", {"target": {"program_id": "program-stable-id"}})
+
+        resolve.assert_called_once_with("", "", "", "program-stable-id")
+
 
 class BridgeLifecycleTests(unittest.TestCase):
     def _with_bridge_config(self, tmp: str):
@@ -92,6 +121,7 @@ class BridgeLifecycleTests(unittest.TestCase):
         pid: int = 1234,
         project: str = "demo",
         program: str = "Demo",
+        program_id: str = "",
     ) -> Path:
         sessions_dir.mkdir(parents=True, exist_ok=True)
         session_file = sessions_dir / f"{session_id}.json"
@@ -110,12 +140,201 @@ class BridgeLifecycleTests(unittest.TestCase):
                     "started_at": "2026-04-25T00:00:00Z",
                     "last_heartbeat": "2026-04-25T00:00:01Z",
                     "armed": True,
+                    "current_program_id": program_id,
+                    "open_programs": (
+                        [{"program_id": program_id, "program_name": program}]
+                        if program_id
+                        else []
+                    ),
                 }
             )
             + "\n",
             encoding="utf-8",
         )
         return session_file
+
+    def test_request_file_uses_v2_routing_envelope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            patches = self._with_bridge_config(tmp)
+            with patches[0], patches[1], patches[2], patches[3], patches[4]:
+                request_file = write_request_file(
+                    "arm",
+                    project_name="demo",
+                    program_name="Demo",
+                    application_id="app-one",
+                    tool_id="tool-one",
+                )
+                request = json.loads(request_file.read_text(encoding="utf-8"))
+
+        self.assertEqual(request["version"], 2)
+        self.assertEqual(request["schema_version"], "cerberus.bridge.request.v2")
+        self.assertEqual(request["application_id"], "app-one")
+        self.assertEqual(request["tool_id"], "tool-one")
+
+    def test_program_id_selects_owning_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            patches = self._with_bridge_config(tmp)
+            with patches[0], patches[1], patches[2], patches[3], patches[4]:
+                self._write_session(cfg.bridge_sessions_dir, "one", program_id="program-one")
+                expected = self._write_session(
+                    cfg.bridge_sessions_dir,
+                    "two",
+                    program="Other",
+                    program_id="program-two",
+                )
+                with patch(
+                    "cerberus_re_skill.modules.bridge_sessions.session_healthy",
+                    return_value=True,
+                ):
+                    selected = resolve_session_file(requested_program_id="program-two")
+                self.assertEqual(selected, expected)
+
+    def test_inventory_redacts_orphan_session_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "bridge"
+            patches = self._with_bridge_config(tmp)
+            with (
+                patches[0],
+                patches[1],
+                patches[2],
+                patches[3],
+                patches[4],
+                patch.object(cfg, "bridge_applications_dir", root / "bridge-applications"),
+            ):
+                session = self._write_session(
+                    cfg.bridge_sessions_dir,
+                    "orphan",
+                    program_id="program-orphan",
+                )
+                payload = json.loads(session.read_text(encoding="utf-8"))
+                payload["token"] = "must-not-leak"
+                session.write_text(json.dumps(payload), encoding="utf-8")
+                cfg.bridge_applications_dir.mkdir(parents=True)
+                (cfg.bridge_applications_dir / "app.json").write_text(
+                    json.dumps(
+                        {
+                            "application_id": "application-live",
+                            "pid": 4321,
+                            "last_heartbeat": utc_now(),
+                            "tools": [],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                with (
+                    patch(
+                        "cerberus_re_skill.modules.bridge_sessions.check_pid_alive",
+                        return_value=True,
+                    ),
+                    patch(
+                        "cerberus_re_skill.modules.bridge_sessions.session_healthy",
+                        return_value=True,
+                    ),
+                ):
+                    inventory = bridge_inventory()
+
+                self.assertEqual(inventory["applications"][0]["status"], "live")
+                self.assertEqual(len(inventory["orphan_sessions"]), 1)
+                self.assertNotIn("token", inventory["orphan_sessions"][0])
+
+    def test_application_inventory_requires_fresh_heartbeat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "bridge"
+            patches = self._with_bridge_config(tmp)
+            with (
+                patches[0],
+                patches[1],
+                patches[2],
+                patches[3],
+                patches[4],
+                patch.object(cfg, "bridge_applications_dir", root / "bridge-applications"),
+            ):
+                cfg.bridge_applications_dir.mkdir(parents=True)
+                (cfg.bridge_applications_dir / "app.json").write_text(
+                    json.dumps(
+                        {
+                            "application_id": "application-unresponsive",
+                            "pid": 4321,
+                            "last_heartbeat": "2026-01-01T00:00:00Z",
+                            "tools": [],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                with patch(
+                    "cerberus_re_skill.modules.bridge_sessions.check_pid_alive",
+                    return_value=True,
+                ):
+                    inventory = bridge_inventory()
+
+        self.assertEqual(inventory["applications"][0]["status"], "unresponsive")
+        self.assertTrue(inventory["applications"][0]["pid_alive"])
+
+    def test_open_program_routes_request_to_explicit_tool(self) -> None:
+        session = {
+            "session_id": "session-one",
+            "application_id": "application-one",
+            "tool_id": "tool-one",
+            "open_programs": [
+                {
+                    "program_id": "program-two",
+                    "program_name": "bridge_two",
+                    "program_path": "/bridge_two",
+                    "current": False,
+                }
+            ],
+        }
+        with (
+            patch(
+                "cerberus_re_skill.modules.bridge_runtime.write_request_file"
+            ) as write_request,
+            patch(
+                "cerberus_re_skill.modules.bridge_runtime.list_sessions",
+                return_value=[session],
+            ),
+        ):
+            result = open_program_in_tool(
+                "broker_acceptance",
+                "bridge_two",
+                "tool-one",
+                application_id="application-one",
+                timeout_seconds=0.1,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["program"]["current"])
+        write_request.assert_called_once_with(
+            "arm",
+            project_name="broker_acceptance",
+            program_name="bridge_two",
+            application_id="application-one",
+            tool_id="tool-one",
+        )
+        write_request.return_value.unlink.assert_called_once_with(missing_ok=True)
+
+    def test_open_program_timeout_removes_its_request(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            request_file = Path(tmp) / "request.json"
+            request_file.write_text("{}", encoding="utf-8")
+            with (
+                patch(
+                    "cerberus_re_skill.modules.bridge_runtime.write_request_file",
+                    return_value=request_file,
+                ),
+                patch(
+                    "cerberus_re_skill.modules.bridge_runtime.list_sessions",
+                    return_value=[],
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "timed out opening"):
+                    open_program_in_tool(
+                        "broker_acceptance",
+                        "missing",
+                        "tool-one",
+                        timeout_seconds=0,
+                    )
+
+        self.assertFalse(request_file.exists())
 
     def test_close_requires_explicit_selector(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "requires --session"):

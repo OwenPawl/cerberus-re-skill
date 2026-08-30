@@ -624,7 +624,7 @@ abstract class CodexBridgeJsonSupport extends CodexBridgeBaseSupport {
 
 	protected JsonObject dataTypeRef(DataType dataType) {
 		JsonObject object = new JsonObject();
-		object.addProperty("program_path", programPath(plugin.getCurrentProgram()));
+		object.addProperty("program_path", programPath(responseProgram()));
 		object.addProperty("category_path",
 			dataType == null ? "" : dataType.getCategoryPath().getPath());
 		object.addProperty("name", dataType == null ? "" : dataType.getName());

@@ -56,6 +56,7 @@ import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.app.plugin.assembler.Assembler;
 import ghidra.app.plugin.assembler.Assemblers;
+import ghidra.app.services.ProgramManager;
 import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.ProjectLocator;
 import ghidra.program.flatapi.FlatProgramAPI;
@@ -122,12 +123,131 @@ abstract class CodexBridgeResolveSupport extends CodexBridgeJsonSupport {
 		super(plugin, provider);
 	}
 
-	protected Program requireProgram() throws BridgeException {
-		Program program = plugin.getCurrentProgram();
-		if (program == null) {
-			throw new BridgeException(409, "no active program in the GUI session");
+	protected Program requireProgram(JsonObject body) throws BridgeException {
+		JsonObject target = optObject(body, "target");
+		String requestedApplication = target == null ? "" : optString(target, "application_id");
+		String requestedTool = target == null ? "" : optString(target, "tool_id");
+		String requestedProgramId = target == null ? "" : optString(target, "program_id", "id");
+		String requestedProgramPath = target == null ? "" : optString(target, "program_path", "domain_path");
+		long expectedProgramVersion = target == null ? -1L :
+			optLong(target, "expected_program_version", optLong(target, "program_version", -1L));
+		String expectedSha256 = target == null ? "" : optString(target, "expected_executable_sha256");
+
+		if (requestedApplication.isEmpty()) {
+			requestedApplication = optString(body, "application_id");
 		}
+		if (requestedTool.isEmpty()) {
+			requestedTool = optString(body, "tool_id");
+		}
+		if (requestedProgramId.isEmpty()) {
+			requestedProgramId = optString(body, "program_id");
+		}
+		if (requestedProgramPath.isEmpty()) {
+			requestedProgramPath = optString(body, "program_path");
+		}
+		if (expectedProgramVersion < 0L) {
+			expectedProgramVersion = optLong(body, "expected_program_version", -1L);
+		}
+		if (expectedSha256.isEmpty()) {
+			expectedSha256 = optString(body, "expected_executable_sha256");
+		}
+
+		validateBridgeTarget(requestedApplication, requestedTool, body);
+		ProgramManager manager = plugin.getTool().getService(ProgramManager.class);
+		String legacyProgram = optString(body, "program", "program_name");
+		boolean explicit = !requestedProgramId.isEmpty() || !requestedProgramPath.isEmpty() ||
+			!legacyProgram.isEmpty();
+		Program program = explicit ?
+			resolveOpenProgram(manager, requestedProgramId, requestedProgramPath, legacyProgram) :
+			plugin.getCurrentProgram();
+		if (program == null) {
+			throw new BridgeException(explicit ? 404 : 409,
+				explicit ? "requested program is not open in this tool" :
+					"no active program in the GUI session");
+		}
+		setRequestProgram(program);
+		validateProgramPreconditions(program, body, expectedProgramVersion, expectedSha256);
 		return program;
+	}
+
+	protected JsonObject requestForProgram(JsonObject body, Program program) {
+		JsonObject request = body == null ? new JsonObject() : body.deepCopy();
+		JsonObject target = optObject(request, "target");
+		if (target == null) {
+			target = new JsonObject();
+			request.add("target", target);
+		}
+		target.addProperty("application_id", plugin.getApplicationId());
+		target.addProperty("tool_id", plugin.getToolId());
+		target.addProperty("program_id", CodexBridgeIdentity.programId(plugin.getTool(), program));
+		return request;
+	}
+
+	private void validateBridgeTarget(String requestedApplication, String requestedTool,
+			JsonObject body) throws BridgeException {
+		if (!requestedApplication.isEmpty() &&
+			!requestedApplication.equals(plugin.getApplicationId())) {
+			throw new BridgeException(409, "application_id does not own this bridge session");
+		}
+		if (!requestedTool.isEmpty() && !requestedTool.equals(plugin.getToolId())) {
+			throw new BridgeException(409, "tool_id does not own this bridge session");
+		}
+		String requestedSession = optString(body, "session", "session_id");
+		if (!requestedSession.isEmpty() && !sessionId.startsWith(requestedSession)) {
+			throw new BridgeException(409, "session_id does not own this request");
+		}
+	}
+
+	private Program resolveOpenProgram(ProgramManager manager, String requestedProgramId,
+			String requestedProgramPath, String legacyProgram) throws BridgeException {
+		if (manager == null) {
+			return null;
+		}
+		List<Program> matches = new ArrayList<>();
+		Program[] openPrograms = manager.getAllOpenPrograms();
+		if (openPrograms == null) {
+			return null;
+		}
+		for (Program candidate : openPrograms) {
+			if (candidate == null) {
+				continue;
+			}
+			String candidatePath = programPath(candidate);
+			boolean match = !requestedProgramId.isEmpty() ?
+				requestedProgramId.equals(CodexBridgeIdentity.programId(plugin.getTool(), candidate)) :
+				!requestedProgramPath.isEmpty() ? requestedProgramPath.equals(candidatePath) :
+					legacyProgram.equals(candidatePath) || legacyProgram.equals(candidate.getName());
+			if (match) {
+				matches.add(candidate);
+			}
+		}
+		if (matches.size() > 1) {
+			throw new BridgeException(409,
+				"program selector is ambiguous; use target.program_id or full program_path");
+		}
+		return matches.isEmpty() ? null : matches.get(0);
+	}
+
+	private void validateProgramPreconditions(Program program, JsonObject body,
+			long expectedProgramVersion, String expectedSha256) throws BridgeException {
+		if (expectedProgramVersion >= 0L &&
+			program.getModificationNumber() != expectedProgramVersion) {
+			throw new BridgeException(409, "program_version changed; refresh inventory before retrying");
+		}
+		if (!expectedSha256.isEmpty() &&
+			!expectedSha256.equalsIgnoreCase(empty(program.getExecutableSHA256()))) {
+			throw new BridgeException(409, "executable SHA-256 does not match the target precondition");
+		}
+		long expectedStateVersion = optLong(body, "expected_state_version", -1L);
+		if (expectedStateVersion >= 0L && plugin.getStateVersion() != expectedStateVersion) {
+			throw new BridgeException(409, "bridge state_version changed; refresh before retrying");
+		}
+		RepositoryState repository = repositoryStateFor(program);
+		String requestedProject = optString(body, "project", "project_name");
+		if (!requestedProject.isEmpty() && !requestedProject.equals(repository.projectName) &&
+			!requestedProject.equals(repository.projectMarkerPath)) {
+			throw new BridgeException(409, "project selector does not own the targeted program");
+		}
 	}
 
 	protected void ensureWritable(Program program) throws BridgeException {
@@ -181,7 +301,13 @@ abstract class CodexBridgeResolveSupport extends CodexBridgeJsonSupport {
 		envelope.add("result", result == null ? JsonNull.INSTANCE : result);
 		envelope.addProperty("error", error);
 		envelope.addProperty("state_version", plugin.getStateVersion());
-		envelope.addProperty("program_path", programPath(plugin.getCurrentProgram()));
+		Program program = responseProgram();
+		envelope.addProperty("application_id", plugin.getApplicationId());
+		envelope.addProperty("tool_id", plugin.getToolId());
+		envelope.addProperty("session_id", sessionId);
+		envelope.addProperty("program_id", CodexBridgeIdentity.programId(plugin.getTool(), program));
+		envelope.addProperty("program_version", program == null ? 0L : program.getModificationNumber());
+		envelope.addProperty("program_path", programPath(program));
 		envelope.addProperty("tool_name", plugin.getTool().getToolName());
 		byte[] bytes = GSON.toJson(envelope).getBytes(StandardCharsets.UTF_8);
 		exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");

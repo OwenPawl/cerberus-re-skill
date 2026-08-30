@@ -28,7 +28,16 @@ def call_bridge(
             body_dict
         )
 
-    session_file = resolve_session_file(requested_session, requested_project, requested_program)
+    target = body_dict.get("target") if isinstance(body_dict.get("target"), dict) else {}
+    requested_program_id = str(
+        target.get("program_id") or body_dict.get("program_id") or ""
+    )
+    session_file = resolve_session_file(
+        requested_session,
+        requested_project,
+        requested_program,
+        requested_program_id,
+    )
     if not session_healthy(session_file):
         raise RuntimeError(
             f"bridge session at {session_file} is stale or unreachable; arm or reopen that target"
@@ -103,6 +112,75 @@ def list_sessions() -> list[dict]:
         reverse=True,
     )
     return sessions
+
+
+def bridge_inventory() -> dict[str, Any]:
+    """Return redacted application/tool/program inventory plus orphan sessions."""
+    applications = list_application_inventory()
+    routed = {
+        (str(tool.get("tool_id") or ""), str(application.get("application_id") or ""))
+        for application in applications
+        for tool in application.get("tools", [])
+        if isinstance(tool, dict)
+    }
+    orphan_sessions = []
+    for session in list_sessions():
+        key = (str(session.get("tool_id") or ""), str(session.get("application_id") or ""))
+        if not all(key) or key not in routed:
+            session = dict(session)
+            session.pop("token", None)
+            orphan_sessions.append(session)
+    return {
+        "schema_version": "cerberus.bridge.inventory.v2",
+        "applications": applications,
+        "orphan_sessions": orphan_sessions,
+    }
+
+
+def open_program_in_tool(
+    project: str,
+    program: str,
+    tool_id: str,
+    *,
+    application_id: str = "",
+    timeout_seconds: float = 30.0,
+) -> dict[str, Any]:
+    """Open *program* visibly in one explicit tool without selecting it."""
+    if not project or not program or not tool_id:
+        raise RuntimeError("project, program, and tool_id are required")
+    request_file = write_request_file(
+        "arm",
+        project_name=project,
+        program_name=program,
+        application_id=application_id,
+        tool_id=tool_id,
+    )
+    try:
+        deadline = time.time() + max(0.0, timeout_seconds)
+        while time.time() <= deadline:
+            for session in list_sessions():
+                if str(session.get("tool_id") or "") != tool_id:
+                    continue
+                if application_id and str(session.get("application_id") or "") != application_id:
+                    continue
+                for opened in session.get("open_programs", []):
+                    if not isinstance(opened, dict):
+                        continue
+                    if program in {
+                        str(opened.get("program_name") or ""),
+                        str(opened.get("program_path") or ""),
+                    }:
+                        return {
+                            "ok": True,
+                            "session_id": session.get("session_id", ""),
+                            "application_id": session.get("application_id", ""),
+                            "tool_id": tool_id,
+                            "program": opened,
+                        }
+            time.sleep(0.25)
+        raise RuntimeError(f"timed out opening {program!r} in tool_id={tool_id}")
+    finally:
+        request_file.unlink(missing_ok=True)
 
 
 def _pid_command_line(pid: int) -> str:
