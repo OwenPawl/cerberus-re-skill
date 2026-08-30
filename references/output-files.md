@@ -44,6 +44,7 @@ Bridge files live under:
 - `~/.config/cerberus-re/bridge-current.json`
 - `~/.config/cerberus-re/bridge-requests/`
 - `~/ghidra-projects/logs/<project_name>/bridge-ops/`
+- `~/ghidra-projects/logs/<project_name>/script-*.routing.json`
 
 Operational rule: if a command emits evidence that supports a claim, keep the
 JSON or Markdown file path with the claim. Terminal-only observations are not

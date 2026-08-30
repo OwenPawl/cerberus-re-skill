@@ -157,6 +157,13 @@ abstract class CodexBridgeResolveSupport extends CodexBridgeJsonSupport {
 		String legacyProgram = optString(body, "program", "program_name");
 		boolean explicit = !requestedProgramId.isEmpty() || !requestedProgramPath.isEmpty() ||
 			!legacyProgram.isEmpty();
+		if (!explicit && manager != null) {
+			Program[] openPrograms = manager.getAllOpenPrograms();
+			if (openPrograms != null && openPrograms.length > 1) {
+				throw new BridgeException(409,
+					"multiple programs are open; use target.program_id or full program_path");
+			}
+		}
 		Program program = explicit ?
 			resolveOpenProgram(manager, requestedProgramId, requestedProgramPath, legacyProgram) :
 			plugin.getCurrentProgram();

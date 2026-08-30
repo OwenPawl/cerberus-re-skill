@@ -366,9 +366,18 @@ class CodexBridgeService extends CodexBridgeReadSupport {
 	}
 
 	private boolean requestMatches(JsonObject request) {
+		String requestedApplication = optString(request, "application_id");
+		String requestedTool = optString(request, "tool_id");
 		String requestedSession = optString(request, "session_id");
 		String requestedProject = optString(request, "project_name");
 		String requestedProgram = optString(request, "program_name");
+		if (!requestedApplication.isEmpty() &&
+			!plugin.getApplicationId().equals(requestedApplication)) {
+			return false;
+		}
+		if (!requestedTool.isEmpty() && !plugin.getToolId().equals(requestedTool)) {
+			return false;
+		}
 		if (!requestedSession.isEmpty() && !sessionId.equals(requestedSession)) {
 			return false;
 		}

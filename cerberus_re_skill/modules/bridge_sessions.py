@@ -374,12 +374,21 @@ def _session_matches(
         ):
             return False
     if requested_program:
-        prog_name = _read_session_value(session_file, "program_name")
-        prog_path = _read_session_value(session_file, "program_path")
-        if not (
-            prog_name == requested_program
-            or prog_path == requested_program
-            or prog_path.endswith(f"/{requested_program}")
+        payload = _read_session_json(session_file)
+        programs = [
+            {
+                "program_name": payload.get("program_name", ""),
+                "program_path": payload.get("program_path", ""),
+            }
+        ]
+        programs.extend(
+            item for item in payload.get("open_programs", []) if isinstance(item, dict)
+        )
+        if not any(
+            str(program.get("program_name") or "") == requested_program
+            or str(program.get("program_path") or "") == requested_program
+            or str(program.get("program_path") or "").endswith(f"/{requested_program}")
+            for program in programs
         ):
             return False
     if requested_program_id:

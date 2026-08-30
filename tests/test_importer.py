@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from contextlib import contextmanager
@@ -233,29 +234,64 @@ class ImportAnalyzeTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "Ghidra script ExportAppleBundle.java failed"):
                     run_script("ExportAppleBundle.java", "demo", "Demo")
 
-    def test_run_script_reports_active_bridge_project_lock_before_headless(self) -> None:
+    def test_run_script_routes_live_owned_project_through_verified_snapshot(self) -> None:
+        commands: list[list[str]] = []
+
+        def runner(command, **_kwargs):
+            commands.append([str(part) for part in command])
+            return SimpleNamespace(returncode=0, stdout=b"script complete", stderr=b"")
+
+        @contextmanager
+        def unlocked(*_args, **_kwargs):
+            yield Path("/tmp/run-script-lock")
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             project = root / "projects" / "demo"
             project.mkdir(parents=True)
             (project / "demo.gpr").write_text("", encoding="utf-8")
+            repository = project / "demo.rep"
+            repository.mkdir()
+            (repository / "data.bin").write_bytes(b"saved project state")
             session_file = root / "bridge-session.json"
             session_file.write_text(
-                '{"session_id":"abc123","pid":4242,"project_name":"demo","program_name":"Demo"}\n',
+                json.dumps(
+                    {
+                        "session_id": "abc123",
+                        "pid": 4242,
+                        "project_name": "demo",
+                        "program_name": "Current",
+                        "open_programs": [
+                            {
+                                "program_id": "program-demo",
+                                "program_name": "Demo",
+                                "program_path": "/Demo",
+                                "changed": False,
+                            }
+                        ],
+                    }
+                )
+                + "\n",
                 encoding="utf-8",
             )
             with (
                 patch.object(cfg, "projects_dir", root / "projects"),
-                patch(
-                    "cerberus_re_skill.modules.bridge_sessions.find_matching_sessions",
-                    return_value=[session_file],
-                ),
-                patch("cerberus_re_skill.modules.importer._headless") as headless,
+                patch.object(cfg, "logs_dir", root / "logs"),
+                patch("cerberus_re_skill.modules.project_access.find_matching_sessions", return_value=[session_file]),
+                patch("cerberus_re_skill.modules.importer._headless", return_value=Path("/bin/analyzeHeadless")),
+                patch("cerberus_re_skill.modules.importer.run", side_effect=runner),
+                patch("cerberus_re_skill.modules.importer.project_headless_lock", side_effect=unlocked),
+                patch("cerberus_re_skill.modules.bridge.require_tools"),
+                patch("cerberus_re_skill.modules.bridge.export_env", return_value={}),
             ):
-                with self.assertRaisesRegex(RuntimeError, "active bridge session holds the Ghidra project lock"):
-                    run_script("ExportAppleBundle.java", "demo", "Demo")
+                result = run_script("ExportAppleBundle.java", "demo", "Demo")
 
-            headless.assert_not_called()
+            self.assertEqual(result["routing"]["mode"], "verified_snapshot")
+            self.assertTrue(result["routing"]["snapshot"]["copy_verified"])
+            self.assertNotEqual(commands[0][1], str(project))
+            self.assertTrue(commands[0][2].startswith("demo-snapshot-"))
+            self.assertFalse(Path(commands[0][1]).exists())
+            self.assertTrue(Path(result["routing_log"]).is_file())
 
     def test_run_script_uses_captured_output_on_success(self) -> None:
         commands: list[list[str]] = []

@@ -41,6 +41,16 @@ class BridgeProtocolSourceTests(unittest.TestCase):
         self.assertIn('optBoolean(body, "activate", false)', read_support)
         self.assertIn('pass activate=true to change the selected program', read_support)
 
+    def test_multi_program_operations_require_an_explicit_program_selector(self) -> None:
+        resolve_support = (JAVA_ROOT / "CodexBridgeResolveSupport.java").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("openPrograms.length > 1", resolve_support)
+        self.assertIn(
+            "multiple programs are open; use target.program_id or full program_path",
+            resolve_support,
+        )
+
     def test_frontend_opens_into_an_explicit_tool_without_selecting(self) -> None:
         frontend = (JAVA_ROOT / "CodexBridgeFrontEndPlugin.java").read_text(encoding="utf-8")
         self.assertIn('optString(request, "tool_id")', frontend)
@@ -52,6 +62,16 @@ class BridgeProtocolSourceTests(unittest.TestCase):
         self.assertIn("findRunningToolById", frontend)
         self.assertIn("requestedApplicationId", frontend)
         self.assertIn("CodexBridgeIdentity.applicationId()", frontend)
+
+    def test_tool_request_poller_honors_application_and_tool_ownership(self) -> None:
+        service = (JAVA_ROOT / "CodexBridgeService.java").read_text(encoding="utf-8")
+        request_matcher = service.split("private boolean requestMatches", 1)[1].split(
+            "private void pollControlRequests", 1
+        )[0]
+        self.assertIn('optString(request, "application_id")', request_matcher)
+        self.assertIn('optString(request, "tool_id")', request_matcher)
+        self.assertIn("plugin.getApplicationId()", request_matcher)
+        self.assertIn("plugin.getToolId()", request_matcher)
 
     def test_every_mutation_and_save_gets_an_immutable_operation_record(self) -> None:
         mutation = (JAVA_ROOT / "CodexBridgeMutationSupport.java").read_text(

@@ -12,8 +12,9 @@ from typing import Any
 from cerberus_re_skill.core.config import cfg
 from cerberus_re_skill.core.ghidra_locator import analyze_headless_path
 from cerberus_re_skill.core.subprocess_utils import find_python, find_tool, run
-from cerberus_re_skill.core.utils import flag_enabled, sanitize_name, timestamp
+from cerberus_re_skill.core.utils import flag_enabled, sanitize_name, timestamp, write_json_atomic
 from cerberus_re_skill.modules.headless_lock import project_headless_lock
+from cerberus_re_skill.modules.project_access import routed_project_read
 
 HEADLESS_SCRIPT_FAILURE_MARKERS = (
     "ERROR REPORT SCRIPT ERROR",
@@ -340,20 +341,11 @@ def run_script(
     if not project_file.exists():
         raise RuntimeError(f"project {project_name!r} not found at {project_file}")
 
-    bridge_sessions = _matching_bridge_session_summaries(project_name, program_name or "")
-    if bridge_sessions:
-        session_list = ", ".join(bridge_sessions)
-        raise RuntimeError(
-            "active bridge session holds the Ghidra project lock; close it before "
-            f"running headless script exports: python3 -m cerberus_re_skill bridge close --project {project_name}. "
-            f"Matching session(s): {session_list}"
-        )
-
-    project_location = cfg.project_location(project_name)
     log_dir = cfg.log_dir(project_name)
     ts = timestamp()
     log_file = log_dir / f"script-{ts}.log"
     script_log = log_dir / f"script-{ts}.script.log"
+    routing_log = log_dir / f"script-{ts}.routing.json"
     script_path = cfg.script_path_str(extra_script_paths)
 
     require_tools()
@@ -361,27 +353,34 @@ def run_script(
     log_dir.mkdir(parents=True, exist_ok=True)
 
     headless = _headless()
-    cmd: list[str] = [
-        str(headless),
-        str(project_location),
-        project_name,
-        "-readOnly",
-    ]
-    if not flag_enabled(os.environ.get("GHIDRA_RUN_SCRIPT_ANALYSIS", "0")):
-        cmd += ["-noanalysis"]
-    cmd += [
-        "-scriptPath", script_path,
-        "-postScript", script_name,
-    ]
-    if script_args:
-        cmd += script_args
-    if program_name:
-        cmd += ["-process", program_name]
-    cmd += _optional_headless_args()
-    cmd += ["-log", str(log_file), "-scriptlog", str(script_log)]
+    with routed_project_read(project_name, program_name or "") as route:
+        routing = route.evidence()
+        write_json_atomic(routing_log, routing)
+        cmd: list[str] = [
+            str(headless),
+            str(route.project_location),
+            route.project_name,
+            "-readOnly",
+        ]
+        if not flag_enabled(os.environ.get("GHIDRA_RUN_SCRIPT_ANALYSIS", "0")):
+            cmd += ["-noanalysis"]
+        cmd += [
+            "-scriptPath", script_path,
+            "-postScript", script_name,
+        ]
+        if script_args:
+            cmd += script_args
+        if program_name:
+            cmd += ["-process", program_name]
+        cmd += _optional_headless_args()
+        cmd += ["-log", str(log_file), "-scriptlog", str(script_log)]
 
-    with project_headless_lock(project_name, project_location, operation=f"run-script:{script_name}"):
-        result = run(cmd, env=env, check=False, capture_output=True)
+        with project_headless_lock(
+            route.project_name,
+            route.project_location,
+            operation=f"run-script:{script_name}",
+        ):
+            result = run(cmd, env=env, check=False, capture_output=True)
 
     failure = _headless_script_failure(
         result.returncode,
@@ -399,37 +398,9 @@ def run_script(
         "script_name": script_name,
         "log": str(log_file),
         "script_log": str(script_log),
+        "routing": routing,
+        "routing_log": str(routing_log),
     }
-
-
-def _matching_bridge_session_summaries(project_name: str, program_name: str) -> list[str]:
-    try:
-        from cerberus_re_skill.modules.bridge_sessions import find_matching_sessions
-    except Exception:
-        return []
-
-    try:
-        matches = find_matching_sessions("", project_name, program_name)
-    except Exception:
-        return []
-
-    summaries: list[str] = []
-    for session_file in matches:
-        try:
-            payload = json.loads(Path(session_file).read_text(encoding="utf-8"))
-        except Exception:
-            summaries.append(str(session_file))
-            continue
-        session_id = str(payload.get("session_id") or Path(session_file).stem)
-        pid = payload.get("pid")
-        program = payload.get("program_name") or payload.get("program_path") or ""
-        details = f"{session_id}"
-        if pid:
-            details += f" pid={pid}"
-        if program:
-            details += f" program={program}"
-        summaries.append(details)
-    return summaries
 
 
 def _headless_script_failure(

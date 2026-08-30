@@ -189,6 +189,36 @@ class BridgeLifecycleTests(unittest.TestCase):
                     selected = resolve_session_file(requested_program_id="program-two")
                 self.assertEqual(selected, expected)
 
+    def test_noncurrent_program_name_selects_v2_owning_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            patches = self._with_bridge_config(tmp)
+            with patches[0], patches[1], patches[2], patches[3], patches[4]:
+                expected = self._write_session(
+                    cfg.bridge_sessions_dir,
+                    "multi-program",
+                    program="Current",
+                    program_id="program-current",
+                )
+                payload = json.loads(expected.read_text(encoding="utf-8"))
+                payload["open_programs"].append(
+                    {
+                        "program_id": "program-noncurrent",
+                        "program_name": "NonCurrent",
+                        "program_path": "/folder/NonCurrent",
+                    }
+                )
+                expected.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+                with patch(
+                    "cerberus_re_skill.modules.bridge_sessions.session_healthy",
+                    return_value=True,
+                ):
+                    selected = resolve_session_file(
+                        requested_project="demo",
+                        requested_program="NonCurrent",
+                    )
+
+                self.assertEqual(selected, expected)
+
     def test_inventory_redacts_orphan_session_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "bridge"
