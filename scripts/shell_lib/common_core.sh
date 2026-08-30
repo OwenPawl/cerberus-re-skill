@@ -612,11 +612,13 @@ ghidra_re_project_rep_dir() {
 
 ghidra_re_headless_lock_path() {
   local project_name="$1"
-  local project_dir=""
-  local key=""
-  project_dir="$(ghidra_re_project_location "$project_name")"
-  key="$(ghidra_re_sanitize_name "$project_dir")"
-  printf '%s/headless-locks/%s.lockdir' "$GHIDRA_RE_CONFIG_HOME" "$key"
+  PYTHONPATH="$GHIDRA_RE_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$(ghidra_re_python)" - \
+    "$project_name" "$(ghidra_re_project_location "$project_name")" <<'PY'
+import sys
+from cerberus_re_skill.modules.headless_lock import lock_path
+
+print(lock_path(sys.argv[1], sys.argv[2]), end="")
+PY
 }
 
 ghidra_re_stat_mtime() {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -25,7 +26,12 @@ DEFAULT_STALE_SECONDS = 1800
 
 def lock_path(project_name: str, project_location: str | Path | None = None) -> Path:
     key_source = str(project_location or project_name)
-    key = sanitize_name(key_source)
+    if project_location is not None:
+        identity = os.path.normcase(os.path.abspath(os.path.expanduser(key_source)))
+    else:
+        identity = key_source
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    key = f"{sanitize_name(key_source)}-{digest}"
     return cfg.config_home / "headless-locks" / f"{key}.lockdir"
 
 

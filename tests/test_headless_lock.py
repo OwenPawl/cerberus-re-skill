@@ -16,6 +16,15 @@ from cerberus_re_skill.modules.headless_lock import (
 
 
 class HeadlessLockTests(unittest.TestCase):
+    def test_same_named_projects_in_different_roots_have_distinct_locks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(cfg, "config_home", Path(tmp)):
+                first = lock_path("demo", "/one/projects/demo")
+                second = lock_path("demo", "/two/projects/demo")
+                self.assertNotEqual(first, second)
+                self.assertTrue(first.name.startswith("demo-"))
+                self.assertEqual(first, lock_path("demo", "/one/projects/demo"))
+
     def test_context_manager_creates_and_releases_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(cfg, "config_home", Path(tmp)):
