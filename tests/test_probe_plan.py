@@ -215,6 +215,7 @@ class ProbePlanTests(unittest.TestCase):
             payload = b"helper"
             probe = materialize_helper(root, "probe.js", payload)
             path = Path(probe["path"])
+            path.chmod(0o600)
             path.unlink()
             path.mkdir()
 
