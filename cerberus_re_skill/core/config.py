@@ -89,6 +89,12 @@ class Config:
         self.bridge_sessions_dir: Path = Path(
             _env("GHIDRA_RE_BRIDGE_SESSIONS_DIR", str(self.bridge_config_dir / "bridge-sessions"))
         )
+        self.bridge_applications_dir: Path = Path(
+            _env(
+                "GHIDRA_RE_BRIDGE_APPLICATIONS_DIR",
+                str(self.bridge_config_dir / "bridge-applications"),
+            )
+        )
         self.bridge_requests_dir: Path = Path(
             _env("GHIDRA_RE_BRIDGE_REQUESTS_DIR", str(self.bridge_config_dir / "bridge-requests"))
         )

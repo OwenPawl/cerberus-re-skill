@@ -1,3 +1,5 @@
+import io
+import json
 import tempfile
 import unittest
 from contextlib import contextmanager
@@ -6,10 +8,66 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from cerberus_re_skill.core.config import cfg
-from cerberus_re_skill.modules.importer import _stage_macho_arch, import_analyze, run_script
+from cerberus_re_skill.modules.importer import (
+    _preserve_overlength_swift_symbols,
+    _replay_import_process_output,
+    _stage_macho_arch,
+    import_analyze,
+    run_script,
+)
 
 
 class ImportAnalyzeTests(unittest.TestCase):
+    def test_import_output_suppresses_expected_dyld_flood_only(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        result = SimpleNamespace(
+            stdout=(
+                b"INFO [/System/Library/Frameworks/Foundation.framework/Foundation] "
+                b"-> not found in project\nanalysis complete\n"
+            ),
+            stderr=b"WARN [@rpath/Owned.framework/Owned] -> not found in project\n",
+        )
+
+        with (
+            patch("cerberus_re_skill.modules.importer.sys.stdout", stdout),
+            patch("cerberus_re_skill.modules.importer.sys.stderr", stderr),
+        ):
+            _replay_import_process_output(result)
+
+        self.assertEqual(stdout.getvalue(), "analysis complete\n")
+        self.assertIn("@rpath/Owned.framework/Owned", stderr.getvalue())
+
+    def test_preserves_overlength_swift_symbols_in_atomic_sidecar(self) -> None:
+        symbol = "_$s" + ("LongIdentity" * 450)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = root / "Framework"
+            sidecar = root / "exports" / "swift_symbol_aliases.json"
+            binary.write_bytes(b"fixture")
+            with (
+                patch("cerberus_re_skill.modules.importer.find_tool", return_value="/usr/bin/nm"),
+                patch(
+                    "cerberus_re_skill.modules.importer.run",
+                    return_value=SimpleNamespace(
+                        returncode=0,
+                        stdout=f"0000000000001000 T {symbol}\n".encode(),
+                        stderr=b"",
+                    ),
+                ),
+            ):
+                result = _preserve_overlength_swift_symbols(
+                    binary,
+                    sidecar,
+                    warning_count=1,
+                )
+            payload = json.loads(sidecar.read_text(encoding="utf-8"))
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["preserved_symbol_count"], 1)
+        self.assertEqual(payload["aliases"][0]["original_name"], symbol)
+        self.assertLess(len(payload["aliases"][0]["stable_alias"]), 2000)
+
     def _capture_import_command(
         self,
         skip_macho_reexports: bool,
@@ -233,29 +291,64 @@ class ImportAnalyzeTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "Ghidra script ExportAppleBundle.java failed"):
                     run_script("ExportAppleBundle.java", "demo", "Demo")
 
-    def test_run_script_reports_active_bridge_project_lock_before_headless(self) -> None:
+    def test_run_script_routes_live_owned_project_through_verified_snapshot(self) -> None:
+        commands: list[list[str]] = []
+
+        def runner(command, **_kwargs):
+            commands.append([str(part) for part in command])
+            return SimpleNamespace(returncode=0, stdout=b"script complete", stderr=b"")
+
+        @contextmanager
+        def unlocked(*_args, **_kwargs):
+            yield Path("/tmp/run-script-lock")
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             project = root / "projects" / "demo"
             project.mkdir(parents=True)
             (project / "demo.gpr").write_text("", encoding="utf-8")
+            repository = project / "demo.rep"
+            repository.mkdir()
+            (repository / "data.bin").write_bytes(b"saved project state")
             session_file = root / "bridge-session.json"
             session_file.write_text(
-                '{"session_id":"abc123","pid":4242,"project_name":"demo","program_name":"Demo"}\n',
+                json.dumps(
+                    {
+                        "session_id": "abc123",
+                        "pid": 4242,
+                        "project_name": "demo",
+                        "program_name": "Current",
+                        "open_programs": [
+                            {
+                                "program_id": "program-demo",
+                                "program_name": "Demo",
+                                "program_path": "/Demo",
+                                "changed": False,
+                            }
+                        ],
+                    }
+                )
+                + "\n",
                 encoding="utf-8",
             )
             with (
                 patch.object(cfg, "projects_dir", root / "projects"),
-                patch(
-                    "cerberus_re_skill.modules.bridge_sessions.find_matching_sessions",
-                    return_value=[session_file],
-                ),
-                patch("cerberus_re_skill.modules.importer._headless") as headless,
+                patch.object(cfg, "logs_dir", root / "logs"),
+                patch("cerberus_re_skill.modules.project_access.find_matching_sessions", return_value=[session_file]),
+                patch("cerberus_re_skill.modules.importer._headless", return_value=Path("/bin/analyzeHeadless")),
+                patch("cerberus_re_skill.modules.importer.run", side_effect=runner),
+                patch("cerberus_re_skill.modules.importer.project_headless_lock", side_effect=unlocked),
+                patch("cerberus_re_skill.modules.bridge.require_tools"),
+                patch("cerberus_re_skill.modules.bridge.export_env", return_value={}),
             ):
-                with self.assertRaisesRegex(RuntimeError, "active bridge session holds the Ghidra project lock"):
-                    run_script("ExportAppleBundle.java", "demo", "Demo")
+                result = run_script("ExportAppleBundle.java", "demo", "Demo")
 
-            headless.assert_not_called()
+            self.assertEqual(result["routing"]["mode"], "verified_snapshot")
+            self.assertTrue(result["routing"]["snapshot"]["copy_verified"])
+            self.assertNotEqual(commands[0][1], str(project))
+            self.assertTrue(commands[0][2].startswith("demo-snapshot-"))
+            self.assertFalse(Path(commands[0][1]).exists())
+            self.assertTrue(Path(result["routing_log"]).is_file())
 
     def test_run_script_uses_captured_output_on_success(self) -> None:
         commands: list[list[str]] = []

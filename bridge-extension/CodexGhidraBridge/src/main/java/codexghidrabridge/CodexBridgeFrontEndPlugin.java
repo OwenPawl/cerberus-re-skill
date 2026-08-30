@@ -20,6 +20,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import ghidra.app.CorePluginPackage;
+import ghidra.app.services.ProgramManager;
 import ghidra.framework.main.ApplicationLevelOnlyPlugin;
 import ghidra.framework.main.FrontEndPlugin;
 import ghidra.framework.model.DomainFile;
@@ -45,6 +46,7 @@ public class CodexBridgeFrontEndPlugin extends Plugin implements ApplicationLeve
 
 	private static final long OPEN_RETRY_INTERVAL_MS = 5000L;
 
+	private final File configDir;
 	private final File requestsDir;
 	private final File legacyControlFile;
 	private Timer controlTimer;
@@ -53,7 +55,7 @@ public class CodexBridgeFrontEndPlugin extends Plugin implements ApplicationLeve
 
 	public CodexBridgeFrontEndPlugin(PluginTool tool) {
 		super(tool);
-		File configDir = new File(new File(System.getProperty("user.home"), ".config"), "ghidra-re");
+		this.configDir = CodexBridgeIdentity.configDirectory();
 		this.requestsDir = new File(configDir, "bridge-requests");
 		this.legacyControlFile = new File(configDir, "bridge-control.json");
 	}
@@ -76,11 +78,13 @@ public class CodexBridgeFrontEndPlugin extends Plugin implements ApplicationLeve
 			controlTimer.stop();
 			controlTimer = null;
 		}
+		CodexBridgeIdentity.applicationFile(configDir).delete();
 		super.dispose();
 	}
 
 	private void pollControlRequests() {
 		try {
+			CodexBridgeIdentity.writeApplicationInventory(configDir, tool.getProject());
 			pollLegacyControlFile();
 			if (!requestsDir.exists()) {
 				return;
@@ -138,6 +142,12 @@ public class CodexBridgeFrontEndPlugin extends Plugin implements ApplicationLeve
 			Msg.info(this, "Codex front-end helper saw arm request before project was available");
 			return false;
 		}
+		String requestedApplicationId = optString(request, "application_id");
+		String applicationId = CodexBridgeIdentity.applicationId();
+		if (!requestedApplicationId.isEmpty() &&
+			!requestedApplicationId.equals(applicationId)) {
+			return false;
+		}
 
 		String requestedProject = optString(request, "project_name");
 		if (!requestedProject.isEmpty() && !requestedProject.equals(project.getName())) {
@@ -154,8 +164,10 @@ public class CodexBridgeFrontEndPlugin extends Plugin implements ApplicationLeve
 
 		Msg.info(this, "Codex front-end helper processing arm request for " + requestedProgram +
 			" in project " + project.getName());
+		String requestedToolId = optString(request, "tool_id");
 
-		PluginTool runningTool = findRunningToolForProgram(project, requestedProgram);
+		PluginTool runningTool =
+			findRunningToolForProgram(project, requestedProgram, requestedToolId);
 		if (runningTool != null) {
 			Msg.info(this, "Codex front-end helper found running tool " + runningTool.getToolName() +
 				" for " + requestedProgram);
@@ -195,34 +207,72 @@ public class CodexBridgeFrontEndPlugin extends Plugin implements ApplicationLeve
 			return false;
 		}
 
-		if (shouldSkipOpenAttempt(requestedProject, requestedProgram)) {
+		if (!requestedToolId.isEmpty()) {
+			PluginTool targetTool = findRunningToolById(project, requestedToolId);
+			if (targetTool == null) {
+				Msg.error(this, "Codex front-end helper could not find tool_id " + requestedToolId,
+					null);
+				return false;
+			}
+			ProgramManager manager = targetTool.getService(ProgramManager.class);
+			if (manager == null) {
+				Msg.error(this, "Codex front-end helper target tool has no ProgramManager", null);
+				return false;
+			}
+			ghidra.program.model.listing.Program opened =
+				manager.openProgram(domainFile, DomainFile.DEFAULT_VERSION,
+					ProgramManager.OPEN_VISIBLE);
+			if (opened == null) {
+				Msg.error(this, "Codex front-end helper could not open " + domainFile.getPathname() +
+					" in tool " + requestedToolId, null);
+				return false;
+			}
+			CodexBridgePlugin bridgePlugin = ensureBridgePlugin(targetTool);
+			if (bridgePlugin == null) {
+				return false;
+			}
+			try {
+				bridgePlugin.armBridge("front-end-targeted-open");
+			}
+			catch (IOException e) {
+				Msg.error(this, "Codex front-end helper could not arm targeted tool", e);
+				return false;
+			}
+			return bridgePlugin.isBridgeArmed();
+		}
+
+		if (shouldSkipOpenAttempt(requestedProject, requestedProgram, requestedToolId)) {
 			return false;
 		}
 
 		Msg.info(this, "Codex front-end helper opening " + domainFile.getPathname());
-		recordOpenAttempt(requestedProject, requestedProgram);
+		recordOpenAttempt(requestedProject, requestedProgram, requestedToolId);
 		frontEndPlugin.openDomainFile(domainFile);
 		return false;
 	}
 
-	private void recordOpenAttempt(String requestedProject, String requestedProgram) {
-		lastOpenRequestKey = requestKey(requestedProject, requestedProgram);
+	private void recordOpenAttempt(String requestedProject, String requestedProgram,
+			String requestedToolId) {
+		lastOpenRequestKey = requestKey(requestedProject, requestedProgram, requestedToolId);
 		lastOpenAttemptAt = System.currentTimeMillis();
 	}
 
-	private boolean shouldSkipOpenAttempt(String requestedProject, String requestedProgram) {
-		String requestKey = requestKey(requestedProject, requestedProgram);
+	private boolean shouldSkipOpenAttempt(String requestedProject, String requestedProgram,
+			String requestedToolId) {
+		String requestKey = requestKey(requestedProject, requestedProgram, requestedToolId);
 		if (!requestKey.equals(lastOpenRequestKey)) {
 			return false;
 		}
 		return System.currentTimeMillis() - lastOpenAttemptAt < OPEN_RETRY_INTERVAL_MS;
 	}
 
-	private String requestKey(String requestedProject, String requestedProgram) {
-		return requestedProject + "\n" + requestedProgram;
+	private String requestKey(String requestedProject, String requestedProgram,
+			String requestedToolId) {
+		return requestedProject + "\n" + requestedProgram + "\n" + requestedToolId;
 	}
 
-	private PluginTool findRunningToolForProgram(Project project, String requestedProgram) {
+	private PluginTool findRunningToolForProgram(Project project, String requestedProgram,
+			String requestedToolId) {
 		if (project == null || project.getToolServices() == null) {
 			return null;
 		}
@@ -233,10 +283,27 @@ public class CodexBridgeFrontEndPlugin extends Plugin implements ApplicationLeve
 			if (runningTool == null || runningTool == tool) {
 				continue;
 			}
+			if (!requestedToolId.isEmpty() &&
+				!requestedToolId.equals(CodexBridgeIdentity.toolId(runningTool))) {
+				continue;
+			}
 			for (DomainFile domainFile : runningTool.getDomainFiles()) {
 				if (matchesRequestedProgram(domainFile, requestedProgram)) {
 					return runningTool;
 				}
+			}
+		}
+		return null;
+	}
+
+	private PluginTool findRunningToolById(Project project, String requestedToolId) {
+		if (project == null || project.getToolServices() == null) {
+			return null;
+		}
+		for (PluginTool runningTool : project.getToolServices().getRunningTools()) {
+			if (runningTool != null &&
+				requestedToolId.equals(CodexBridgeIdentity.toolId(runningTool))) {
+				return runningTool;
 			}
 		}
 		return null;

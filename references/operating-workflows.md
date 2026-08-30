@@ -96,8 +96,18 @@ Useful endpoints include:
 - `/edit/comment`
 - `/patch/bytes`
 
-Most calls accept optional `session`, `project`, or `program` selectors. Prefer
-explicit selectors when multiple Ghidra sessions are live.
+Use `bridge inventory` to discover stable application, tool, and open-program
+handles. When a tool has multiple programs open, program-scoped calls require
+an explicit `target.program_id` or full `program_path`; Cerberus does not infer
+the selected tab. Application- and tool-targeted arm requests are consumed only
+by their owners, and disarming a bridge does not terminate its Ghidra JVM.
+
+Read-only script exports detect project ownership from both armed sessions and
+the application heartbeat inventory. A clean GUI-owned project is copied to a
+content-verified temporary snapshot and emits a `*.routing.json` manifest under
+the project log directory. A dirty target is rejected until it is explicitly
+saved or read through the live bridge; an unowned project continues to use
+direct headless access.
 
 ## LLDB
 

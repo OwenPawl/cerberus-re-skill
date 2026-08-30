@@ -1,0 +1,129 @@
+import unittest
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+JAVA_ROOT = (
+    REPO_ROOT
+    / "bridge-extension"
+    / "CodexGhidraBridge"
+    / "src"
+    / "main"
+    / "java"
+    / "codexghidrabridge"
+)
+
+
+class BridgeProtocolSourceTests(unittest.TestCase):
+    def test_all_program_operations_resolve_the_request_body(self) -> None:
+        read_support = (JAVA_ROOT / "CodexBridgeReadSupport.java").read_text(encoding="utf-8")
+        mutation_support = (JAVA_ROOT / "CodexBridgeMutationSupport.java").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("requireProgram()", read_support)
+        self.assertNotIn("requireProgram()", mutation_support)
+        self.assertGreaterEqual(read_support.count("requireProgram(body)"), 15)
+        self.assertIn("Program program = requireProgram(body);", mutation_support)
+
+    def test_v2_identity_and_inventory_are_published(self) -> None:
+        identity = (JAVA_ROOT / "CodexBridgeIdentity.java").read_text(encoding="utf-8")
+        service = (JAVA_ROOT / "CodexBridgeService.java").read_text(encoding="utf-8")
+        frontend = (JAVA_ROOT / "CodexBridgeFrontEndPlugin.java").read_text(encoding="utf-8")
+        self.assertIn('SCHEMA_VERSION = "cerberus.bridge.v2"', identity)
+        self.assertIn('"executable_sha256"', identity)
+        self.assertIn('"open_programs"', identity)
+        self.assertIn('session.addProperty("version", 2)', service)
+        self.assertIn('"/inventory"', service)
+        self.assertIn("writeApplicationInventory", frontend)
+
+    def test_java_and_python_share_the_modern_bridge_config_root(self) -> None:
+        identity = (JAVA_ROOT / "CodexBridgeIdentity.java").read_text(encoding="utf-8")
+        service = (JAVA_ROOT / "CodexBridgeService.java").read_text(encoding="utf-8")
+        frontend = (JAVA_ROOT / "CodexBridgeFrontEndPlugin.java").read_text(encoding="utf-8")
+        self.assertIn('System.getenv("GHIDRA_RE_CONFIG_HOME")', identity)
+        self.assertIn('"cerberus-re"', identity)
+        self.assertIn("CodexBridgeIdentity.configDirectory()", service)
+        self.assertIn("CodexBridgeIdentity.configDirectory()", frontend)
+
+    def test_non_current_navigation_requires_explicit_activation(self) -> None:
+        read_support = (JAVA_ROOT / "CodexBridgeReadSupport.java").read_text(encoding="utf-8")
+        self.assertIn('optBoolean(body, "activate", false)', read_support)
+        self.assertIn('pass activate=true to change the selected program', read_support)
+
+    def test_multi_program_operations_require_an_explicit_program_selector(self) -> None:
+        resolve_support = (JAVA_ROOT / "CodexBridgeResolveSupport.java").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("openPrograms.length > 1", resolve_support)
+        self.assertIn(
+            "multiple programs are open; use target.program_id or full program_path",
+            resolve_support,
+        )
+
+    def test_frontend_opens_into_an_explicit_tool_without_selecting(self) -> None:
+        frontend = (JAVA_ROOT / "CodexBridgeFrontEndPlugin.java").read_text(encoding="utf-8")
+        self.assertIn('optString(request, "tool_id")', frontend)
+        self.assertIn(
+            "manager.openProgram(domainFile, DomainFile.DEFAULT_VERSION,",
+            frontend,
+        )
+        self.assertIn("ProgramManager.OPEN_VISIBLE", frontend)
+        self.assertIn("findRunningToolById", frontend)
+        self.assertIn("requestedApplicationId", frontend)
+        self.assertIn("CodexBridgeIdentity.applicationId()", frontend)
+
+    def test_tool_request_poller_honors_application_and_tool_ownership(self) -> None:
+        service = (JAVA_ROOT / "CodexBridgeService.java").read_text(encoding="utf-8")
+        request_matcher = service.split("private boolean requestMatches", 1)[1].split(
+            "private void pollControlRequests", 1
+        )[0]
+        self.assertIn('optString(request, "application_id")', request_matcher)
+        self.assertIn('optString(request, "tool_id")', request_matcher)
+        self.assertIn("plugin.getApplicationId()", request_matcher)
+        self.assertIn("plugin.getToolId()", request_matcher)
+
+    def test_every_mutation_and_save_gets_an_immutable_operation_record(self) -> None:
+        mutation = (JAVA_ROOT / "CodexBridgeMutationSupport.java").read_text(
+            encoding="utf-8"
+        )
+        read_support = (JAVA_ROOT / "CodexBridgeReadSupport.java").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("if (mutation != null)", mutation)
+        self.assertNotIn("if (destructive && mutation != null)", mutation)
+        self.assertIn('"cerberus.bridge.operation.v2"', mutation)
+        self.assertIn('writeOperationLog(program, "program-save", body, mutation)', read_support)
+
+    def test_rename_and_inline_logs_have_canonical_replay_and_save_lineage(self) -> None:
+        mutation = (JAVA_ROOT / "CodexBridgeMutationSupport.java").read_text(
+            encoding="utf-8"
+        )
+        read_support = (JAVA_ROOT / "CodexBridgeReadSupport.java").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('return "/edit/rename"', mutation)
+        self.assertIn('return "/edit/function-signature"', mutation)
+        self.assertIn('descriptor.addProperty("semantics", "set-final-state")', mutation)
+        self.assertIn('target.addProperty("expected_executable_sha256"', mutation)
+        self.assertIn('variableRef.remove("name")', mutation)
+        self.assertIn('replayBody.addProperty("address", address)', mutation)
+        self.assertIn(
+            'result.getAsJsonObject().add("bridge_operation", operation)', mutation
+        )
+        self.assertIn('"covered_operation_ids"', read_support)
+
+    def test_program_save_waits_boundedly_for_analysis_transactions(self) -> None:
+        read_support = (JAVA_ROOT / "CodexBridgeReadSupport.java").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("SAVE_QUIESCENCE_TIMEOUT_MILLIS = 5_000", read_support)
+        self.assertIn("program.getCurrentTransactionInfo()", read_support)
+        self.assertIn("ACTIVE_TRANSACTION_SAVE_ERROR.equals", read_support)
+        self.assertIn("SAVE_DURING_TRANSACTION_ERROR.equals", read_support)
+        self.assertIn("new BridgeException(409", read_support)
+        self.assertIn('result.addProperty("save_attempts"', read_support)
+        self.assertIn('result.addProperty("save_wait_millis"', read_support)
+
+
+if __name__ == "__main__":
+    unittest.main()

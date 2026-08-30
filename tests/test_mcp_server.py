@@ -179,6 +179,21 @@ class MCPRuntimeTests(unittest.TestCase):
             "cerberus_run",
             "job_status",
             "mission_companion_status",
+            "checkpoint_prepare",
+            "checkpoint_save",
+            "checkpoint_verify",
+            "checkpoint_restore",
+            "checkpoint_resume_pack",
+            "probe_plan_create",
+            "probe_plan_verify",
+            "probe_plan_write",
+            "probe_lifecycle_record",
+            "probe_lifecycle_summarize",
+            "evidence_append",
+            "evidence_export",
+            "evidence_query",
+            "evidence_certification_gate",
+            "evidence_certify",
         ]:
             self.assertIn(name, names)
 

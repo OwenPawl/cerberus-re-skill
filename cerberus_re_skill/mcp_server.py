@@ -14,6 +14,8 @@ from mcp.server.fastmcp import Context, FastMCP
 from pydantic import BaseModel
 
 from .mcp_jobs import JobStore
+from .mcp_probe_evidence import register_probe_evidence_tools
+from .modules.mission_checkpoint import CheckpointError, CheckpointStore
 from .mcp_runtime import (
     BLOCKED,
     FAILED,
@@ -230,23 +232,118 @@ def create_server(settings: MCPSettings | None = None) -> FastMCP:
     settings.ensure_state()
     runner = CommandRunner(settings)
     jobs = JobStore(settings)
+    checkpoints = CheckpointStore(settings.state_dir / "checkpoints")
     server = FastMCP(
         "cerberus-re",
         log_level="WARNING",
         instructions=(
             "Use the static/dynamic/instrumentation evidence loop. Runtime operations "
             "and bridge mutations are gated and audited. Read envelope status instead "
-            "of inferring success from prose. When mission_* tools are available, use "
+            "of inferring success from prose. ProbePlan and evidence tools are artifact-only. "
+            "When mission_* tools are available, use "
             "them for durable state, claims, friction, artifacts, and closeout."
         ),
     )
     companion = _register_mission_companion(server)
+    register_probe_evidence_tools(server, settings)
 
     @server.tool()
     def mission_companion_status() -> dict[str, Any]:
         """Report whether long-run-agent mission tools are composed into this server."""
         status = SUCCESS if companion["available"] else UNVERIFIED
         return envelope(status, data=companion, note=companion["reason"])
+
+    def checkpoint_result(action: str, transaction_id: str, operation: Any) -> dict[str, Any]:
+        try:
+            data = operation()
+        except (CheckpointError, OSError, ValueError) as error:
+            append_audit(
+                settings,
+                {
+                    "tier": "checkpoint",
+                    "action": action,
+                    "transaction_id": transaction_id,
+                    "outcome": "failed",
+                    "detail": str(error),
+                },
+            )
+            return envelope(FAILED, note=str(error))
+        append_audit(
+            settings,
+            {
+                "tier": "checkpoint",
+                "action": action,
+                "transaction_id": transaction_id,
+                "outcome": "success",
+            },
+        )
+        return envelope(SUCCESS, data=data, note=f"checkpoint {action} succeeded")
+
+    @server.tool()
+    def checkpoint_prepare(
+        transaction_id: str,
+        mission_id: str,
+        target: dict[str, Any],
+        dependencies: list[dict[str, Any]],
+        providers: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Prepare one immutable checkpoint transaction after validating target identity."""
+        return checkpoint_result(
+            "prepare",
+            transaction_id,
+            lambda: checkpoints.prepare(
+                transaction_id,
+                mission_id=mission_id,
+                target=target,
+                dependencies=dependencies,
+                providers=providers or {},
+            ),
+        )
+
+    @server.tool()
+    def checkpoint_save(
+        transaction_id: str,
+        routing: dict[str, Any],
+        provider_payloads: dict[str, dict[str, Any]],
+        expected_generation: int | None = None,
+    ) -> dict[str, Any]:
+        """Commit routing and provider state with optional generation CAS protection."""
+        return checkpoint_result(
+            "save",
+            transaction_id,
+            lambda: checkpoints.checkpoint(
+                transaction_id,
+                routing=routing,
+                provider_payloads=provider_payloads,
+                expected_generation=expected_generation,
+            ),
+        )
+
+    @server.tool()
+    def checkpoint_verify(transaction_id: str) -> dict[str, Any]:
+        """Verify the committed event chain and every referenced content digest."""
+        return checkpoint_result(
+            "verify", transaction_id, lambda: checkpoints.verify(transaction_id)
+        )
+
+    @server.tool()
+    def checkpoint_restore(transaction_id: str) -> dict[str, Any]:
+        """Read verified checkpoint state without assuming saved live handles are reusable."""
+        return checkpoint_result(
+            "restore", transaction_id, lambda: checkpoints.restore(transaction_id)
+        )
+
+    @server.tool()
+    def checkpoint_resume_pack(
+        transaction_id: str,
+        max_bytes: int = 65536,
+    ) -> dict[str, Any]:
+        """Build a bounded verified resume pack, failing rather than truncating."""
+        return checkpoint_result(
+            "resume_pack",
+            transaction_id,
+            lambda: checkpoints.resume_pack(transaction_id, max_bytes=max_bytes),
+        )
 
     @server.tool()
     def env_doctor(frida_target: str = "") -> dict[str, Any]:
@@ -610,6 +707,24 @@ def create_server(settings: MCPSettings | None = None) -> FastMCP:
         return runner.wrap(runner.run(["bridge", "sessions"], timeout=60))
 
     @server.tool()
+    def bridge_inventory() -> dict[str, Any]:
+        """List Ghidra applications, tools, and open programs with stable handles."""
+        return runner.wrap(runner.run(["bridge", "inventory"], timeout=60))
+
+    @server.tool()
+    def bridge_open_program(
+        project: str,
+        program: str,
+        tool_id: str,
+        application_id: str = "",
+    ) -> dict[str, Any]:
+        """Open a program in one explicit live Ghidra tool without selecting it."""
+        args = ["bridge", "open", project, program, "--tool-id", tool_id]
+        if application_id:
+            args.extend(["--application-id", application_id])
+        return runner.wrap(runner.run(args, timeout=90))
+
+    @server.tool()
     def bridge_status(body: dict[str, Any] | None = None) -> dict[str, Any]:
         """Read bridge status for an optional session/project/program selector."""
         payload = json.dumps(body or {}, separators=(",", ":"))
@@ -718,7 +833,8 @@ def create_server(settings: MCPSettings | None = None) -> FastMCP:
             "Loop: import_analyze -> export_apple_bundle -> focused static reports -> "
             "guarded lldb_trace/frida_recheck_attach -> runtime_enrich. Runtime and bridge "
             "mutation denials return blocked and must not be routed through cerberus_run. "
-            "Treat no_hit and unverified as distinct from success. "
+            "Use probe_plan_* and evidence_* before runtime execution, and treat no_hit "
+            "and unverified as distinct from success. "
             + mission
         )
 

@@ -122,6 +122,7 @@ class CodexBridgeService extends CodexBridgeReadSupport {
 	private static final List<String> CAPABILITIES = Collections.unmodifiableList(Arrays.asList(
 		"/health",
 		"/session",
+		"/inventory",
 		"/context",
 		"/analyze/target",
 		"/functions/search",
@@ -166,7 +167,7 @@ class CodexBridgeService extends CodexBridgeReadSupport {
 
 	CodexBridgeService(CodexBridgePlugin plugin, CodexBridgeProvider provider) {
 		super(plugin, provider);
-		this.configDir = new File(new File(System.getProperty("user.home"), ".config"), "ghidra-re");
+		this.configDir = CodexBridgeIdentity.configDirectory();
 		this.sessionsDir = new File(configDir, "bridge-sessions");
 		this.requestsDir = new File(configDir, "bridge-requests");
 		this.legacyControlFile = new File(configDir, "bridge-control.json");
@@ -277,6 +278,10 @@ class CodexBridgeService extends CodexBridgeReadSupport {
 		return program.getName() + " [" + domainFile.getPathname() + "]";
 	}
 
+	String getSessionId() {
+		return sessionId;
+	}
+
 	private void ensureConfigDir() throws IOException {
 		if (!configDir.exists() && !configDir.mkdirs()) {
 			throw new IOException("failed to create " + configDir);
@@ -294,8 +299,11 @@ class CodexBridgeService extends CodexBridgeReadSupport {
 		ensureConfigDir();
 		RepositoryState repository = repositoryStateFor(plugin.getCurrentProgram());
 		JsonObject session = new JsonObject();
-		session.addProperty("version", 1);
+		session.addProperty("version", 2);
+		session.addProperty("schema_version", CodexBridgeIdentity.SCHEMA_VERSION);
 		session.addProperty("session_id", sessionId);
+		session.addProperty("application_id", plugin.getApplicationId());
+		session.addProperty("tool_id", plugin.getToolId());
 		session.addProperty("bridge_url", bridgeUrl);
 		session.addProperty("token", token);
 		session.addProperty("pid", ProcessHandle.current().pid());
@@ -304,6 +312,9 @@ class CodexBridgeService extends CodexBridgeReadSupport {
 		session.addProperty("project_path", repository.projectMarkerPath);
 		session.addProperty("program_name", repository.programName);
 		session.addProperty("program_path", repository.domainPath);
+		session.addProperty("current_program_id",
+			CodexBridgeIdentity.programId(plugin.getTool(), plugin.getCurrentProgram()));
+		session.add("open_programs", CodexBridgeIdentity.openProgramsToJson(plugin.getTool()));
 		session.addProperty("started_at", startedAt);
 		session.addProperty("last_heartbeat", DateTimeFormatter.ISO_INSTANT.format(Instant.now()));
 		session.addProperty("armed", armed);
@@ -355,9 +366,18 @@ class CodexBridgeService extends CodexBridgeReadSupport {
 	}
 
 	private boolean requestMatches(JsonObject request) {
+		String requestedApplication = optString(request, "application_id");
+		String requestedTool = optString(request, "tool_id");
 		String requestedSession = optString(request, "session_id");
 		String requestedProject = optString(request, "project_name");
 		String requestedProgram = optString(request, "program_name");
+		if (!requestedApplication.isEmpty() &&
+			!plugin.getApplicationId().equals(requestedApplication)) {
+			return false;
+		}
+		if (!requestedTool.isEmpty() && !plugin.getToolId().equals(requestedTool)) {
+			return false;
+		}
 		if (!requestedSession.isEmpty() && !sessionId.equals(requestedSession)) {
 			return false;
 		}
@@ -423,6 +443,9 @@ class CodexBridgeService extends CodexBridgeReadSupport {
 			log("request failed " + path + ": " + e.getMessage());
 			sendJson(exchange, 500, null, e.toString());
 		}
+		finally {
+			clearRequestProgram();
+		}
 	}
 
 	private JsonElement dispatch(String path, JsonObject body) throws Exception {
@@ -431,6 +454,8 @@ class CodexBridgeService extends CodexBridgeReadSupport {
 				return handleHealth();
 			case "/session":
 				return handleSession();
+			case "/inventory":
+				return handleInventory();
 			case "/context":
 				return handleContext();
 			case "/analyze/target":

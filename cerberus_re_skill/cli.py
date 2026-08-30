@@ -12,6 +12,7 @@ from cerberus_re_skill.commands import export_runtime as _export_runtime
 from cerberus_re_skill.commands import export_static as _export_static
 from cerberus_re_skill.commands import export_workflow as _export_workflow
 from cerberus_re_skill.commands import export_xpc as _export_xpc
+from cerberus_re_skill.commands import frida_gadget as _frida_gadget
 from cerberus_re_skill.commands import import_commands as _import_commands
 from cerberus_re_skill.commands import install_publish as _install_publish
 from cerberus_re_skill.commands import sources_mission_notes as _sources_mission_notes

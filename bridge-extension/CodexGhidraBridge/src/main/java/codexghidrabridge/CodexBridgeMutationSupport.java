@@ -565,7 +565,7 @@ abstract class CodexBridgeMutationSupport extends CodexBridgeResolveSupport {
 
 	protected JsonElement executeMutation(String opName, JsonObject body, boolean destructive,
 			MutationAction action) throws Exception {
-		Program program = requireProgram();
+		Program program = requireProgram(body);
 		requireWriteFlags(body, destructive);
 		ensureWritable(program);
 
@@ -582,44 +582,211 @@ abstract class CodexBridgeMutationSupport extends CodexBridgeResolveSupport {
 		}
 		plugin.incrementState(opName);
 		updateSessionIfArmed();
-		if (destructive && mutation != null) {
-			writeOperationLog(opName, body, mutation);
+		JsonElement result = mutation == null ? JsonNull.INSTANCE : mutation.result;
+		if (mutation != null) {
+			JsonObject operation = writeOperationLog(program, opName, body, mutation);
+			if (result.isJsonObject()) {
+				result.getAsJsonObject().add("bridge_operation", operation);
+			}
 		}
-		return mutation == null ? JsonNull.INSTANCE : mutation.result;
+		return result;
 	}
 
-	protected void writeOperationLog(String opName, JsonObject request, MutationResult mutation) {
+	protected JsonObject writeOperationLog(Program program, String opName, JsonObject request,
+			MutationResult mutation) {
+		String operationId = UUID.randomUUID().toString();
+		JsonObject receipt = new JsonObject();
+		receipt.addProperty("operation_id", operationId);
 		try {
-			Program program = plugin.getCurrentProgram();
 			RepositoryState repository = repositoryStateFor(program);
-			String projectName = repository.projectName.isEmpty() ? "unknown-project" : repository.projectName;
-			File logDir =
-				new File(new File(new File(System.getProperty("user.home"), "ghidra-projects"), "logs"),
-					projectName + "/bridge-ops");
+			File logDir = operationLogDirectory(repository);
 			if (!logDir.exists()) {
 				logDir.mkdirs();
 			}
-			File output =
-				new File(logDir, DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(java.time.ZoneId.systemDefault()).format(Instant.now()) +
-					"-" + slug(opName) + ".json");
+			File output = new File(logDir,
+				DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS")
+					.withZone(java.time.ZoneId.systemDefault()).format(Instant.now()) +
+					"-" + slug(opName) + "-" + operationId + ".json");
 			JsonObject payload = new JsonObject();
+			payload.addProperty("schema_version", "cerberus.bridge.operation.v2");
+			payload.addProperty("operation_id", operationId);
 			payload.addProperty("operation_kind", opName);
 			payload.add("request_body", request.deepCopy());
+			JsonObject replay = buildReplayDescriptor(program, opName, request, mutation);
+			payload.add("replay", replay);
 			payload.add("before_state", mutation.before == null ? JsonNull.INSTANCE : mutation.before.deepCopy());
 			payload.add("after_state_summary",
 				mutation.result == null ? JsonNull.INSTANCE : mutation.result.deepCopy());
 			payload.add("target_refs", mutation.targets.deepCopy());
 			payload.add("inverse", mutation.inverse.deepCopy());
 			payload.addProperty("tool_name", plugin.getTool().getToolName());
+			payload.addProperty("application_id", plugin.getApplicationId());
+			payload.addProperty("tool_id", plugin.getToolId());
+			payload.addProperty("session_id", plugin.getSessionId());
+			payload.addProperty("program_id",
+				CodexBridgeIdentity.programId(plugin.getTool(), program));
 			payload.addProperty("program_path", repository.domainPath);
 			payload.addProperty("project_path", repository.projectMarkerPath);
 			payload.addProperty("pid", ProcessHandle.current().pid());
 			payload.addProperty("created_at", DateTimeFormatter.ISO_INSTANT.format(Instant.now()));
+			payload.addProperty("program_version", program.getModificationNumber());
 			payload.add("repository", repositoryToJson(repository));
 			writeJson(output, payload);
+			receipt.addProperty("recorded", true);
+			receipt.addProperty("operation_path", output.getCanonicalPath());
+			receipt.add("replay", replay.deepCopy());
 		}
 		catch (Exception e) {
 			log("operation log failure: " + e.getMessage());
+			receipt.addProperty("recorded", false);
+			receipt.addProperty("error", e.toString());
+		}
+		return receipt;
+	}
+
+	protected JsonArray operationIdsSincePriorSave(Program program) {
+		List<JsonObject> records = new ArrayList<>();
+		try {
+			RepositoryState repository = repositoryStateFor(program);
+			File[] files = operationLogDirectory(repository).listFiles(
+				(pathname) -> pathname.isFile() && pathname.getName().endsWith(".json"));
+			if (files == null) {
+				return new JsonArray();
+			}
+			String programPath = repository.domainPath;
+			for (File file : files) {
+				try {
+					JsonObject record = readJsonObject(file);
+					if (programPath.equals(optString(record, "program_path"))) {
+						records.add(record);
+					}
+				}
+				catch (Exception ignored) {
+					// A malformed unrelated log cannot invalidate the current save receipt.
+				}
+			}
+			records.sort((left, right) -> {
+				Instant leftTime = operationInstant(left);
+				Instant rightTime = operationInstant(right);
+				int compared = leftTime.compareTo(rightTime);
+				return compared != 0 ? compared :
+					optString(left, "operation_id").compareTo(optString(right, "operation_id"));
+			});
+		}
+		catch (Exception e) {
+			log("operation lineage scan failure: " + e.getMessage());
+			return new JsonArray();
+		}
+		List<String> pending = new ArrayList<>();
+		for (JsonObject record : records) {
+			if ("program-save".equals(optString(record, "operation_kind"))) {
+				pending.clear();
+				continue;
+			}
+			String operationId = optString(record, "operation_id");
+			if (!operationId.isEmpty()) {
+				pending.add(operationId);
+			}
+		}
+		JsonArray result = new JsonArray();
+		for (String operationId : pending) {
+			result.add(operationId);
+		}
+		return result;
+	}
+
+	private File operationLogDirectory(RepositoryState repository) {
+		String projectName = repository.projectName.isEmpty() ?
+			"unknown-project" : repository.projectName;
+		return new File(
+			new File(new File(System.getProperty("user.home"), "ghidra-projects"), "logs"),
+			projectName + "/bridge-ops");
+	}
+
+	private Instant operationInstant(JsonObject record) {
+		try {
+			return Instant.parse(optString(record, "created_at"));
+		}
+		catch (Exception ignored) {
+			return Instant.EPOCH;
+		}
+	}
+
+	private JsonObject buildReplayDescriptor(Program program, String opName, JsonObject request,
+			MutationResult mutation) {
+		JsonObject descriptor = new JsonObject();
+		String endpoint = replayEndpoint(opName);
+		if (endpoint.isEmpty()) {
+			descriptor.addProperty("supported", false);
+			descriptor.addProperty("reason", "operation has no safe canonical replay contract");
+			return descriptor;
+		}
+		JsonObject replayBody = new JsonObject();
+		JsonObject target = new JsonObject();
+		target.addProperty("program_path", programPath(program));
+		target.addProperty("expected_executable_sha256", empty(program.getExecutableSHA256()));
+		replayBody.add("target", target);
+		replayBody.addProperty("write", true);
+		JsonObject targetRef = firstTargetRef(mutation);
+		if (targetRef.has("function_entry")) {
+			JsonObject variableRef = targetRef.deepCopy();
+			variableRef.remove("name");
+			replayBody.add("variable_ref", variableRef);
+		}
+		else {
+			String address = optString(targetRef, "entry", "address");
+			if (!address.isEmpty()) {
+				replayBody.addProperty("address", address);
+			}
+		}
+		JsonObject after = mutation.result != null && mutation.result.isJsonObject() ?
+			mutation.result.getAsJsonObject() : new JsonObject();
+		if ("edit-rename".equals(opName)) {
+			replayBody.addProperty("rename", optString(after, "name"));
+		}
+		else {
+			copyReplayField(request, replayBody, "return_type");
+			copyReplayField(request, replayBody, "calling_convention");
+			copyReplayField(request, replayBody, "no_return");
+			copyReplayField(request, replayBody, "has_var_args");
+			copyReplayField(request, replayBody, "var_args");
+			copyReplayField(request, replayBody, "params");
+			copyReplayField(request, replayBody, "parameters");
+			if (hasAny(request, "rename", "new_name")) {
+				replayBody.addProperty("rename", optString(after, "name"));
+			}
+			if (hasAny(request, "inline", "is_inline")) {
+				replayBody.addProperty("inline", optBoolean(after, "is_inline", false));
+			}
+		}
+		descriptor.addProperty("supported", true);
+		descriptor.addProperty("endpoint", endpoint);
+		descriptor.addProperty("semantics", "set-final-state");
+		descriptor.add("request_body", replayBody);
+		return descriptor;
+	}
+
+	private void copyReplayField(JsonObject source, JsonObject destination, String name) {
+		if (source.has(name)) {
+			destination.add(name, source.get(name).deepCopy());
+		}
+	}
+
+	private JsonObject firstTargetRef(MutationResult mutation) {
+		if (mutation.targets.size() == 0 || !mutation.targets.get(0).isJsonObject()) {
+			return new JsonObject();
+		}
+		return mutation.targets.get(0).getAsJsonObject();
+	}
+
+	private String replayEndpoint(String opName) {
+		switch (opName) {
+			case "edit-rename":
+				return "/edit/rename";
+			case "edit-function-signature":
+				return "/edit/function-signature";
+			default:
+				return "";
 		}
 	}
 }

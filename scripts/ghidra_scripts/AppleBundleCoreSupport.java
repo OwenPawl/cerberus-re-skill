@@ -81,7 +81,7 @@ abstract class AppleBundleCoreSupport extends GhidraScript {
 	protected final Map<String, String> swiftDemangleCache = new HashMap<>();
 	protected final Map<String, String> swiftBridgeTypeHints = new LinkedHashMap<>();
 	protected final Set<String> swiftKnownTypeHints = new LinkedHashSet<>();
-	protected String swiftDemangleTool = null;
+	protected String swiftDemangleTool = "";
 	protected boolean swiftDemangleToolResolved = false;
 	protected boolean swiftNameHintsResolved = false;
 

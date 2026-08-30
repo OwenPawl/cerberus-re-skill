@@ -48,6 +48,7 @@ python3 -m cerberus_re_skill <command>
 - `cerberus-re frida diagnose [--target <binary>]`
 - `cerberus-re frida validate-scripts [--symbol <objc-method>] [--class-name <ObjCClass>]`
 - `cerberus-re frida recheck-attach [--target <binary> | --attach-pid <pid> | --attach-name <regex>] [--selector <selector> | --symbol <method> ... | --native-symbol <export>|<Module!export>] [--native-wait-seconds <seconds>] [--native-arg-preview] [--allow-runtime]`; ObjC exact-method, selector-wide, and native hook modes are exclusive to avoid partial-coverage ambiguity. `--native-arg-preview` is opt-in and adds bounded best-effort register previews to native-call hits.
+- `cerberus-re frida gadget-probe <owned-binary> --gadget <FridaGadget.dylib> --script <autonomous.js> --stable-target-key <id> --output-dir <dir> [--parameters <json-object>] [--arg <value> ...] [--allow-runtime]`; stages immutable helpers and launches only with explicit runtime consent. This is a launch-injection fallback, not attach validation.
 - `cerberus-re frida objc-probe [--target <binary> | --attach-pid <pid>] [--class <ObjCClass> ...] [--call Class.method] [--call-string 'Class.method:=value'] [--allow-runtime]`
 - `cerberus-re frida objc-heap [--target <binary> | --attach-pid <pid>] [--class <ObjCClass> ...] [--getter <getter> ...] [--allow-runtime]`
 - `cerberus-re frida objc-archive --archive <secure-archive> --class <ObjCClass> [--getter <getter> ...] [--allow-runtime]`

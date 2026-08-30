@@ -125,6 +125,7 @@ abstract class CodexBridgeBaseSupport {
 
 	protected final CodexBridgePlugin plugin;
 	protected final CodexBridgeProvider provider;
+	private final ThreadLocal<Program> requestProgram = new ThreadLocal<>();
 	protected boolean armed;
 	protected final String sessionId;
 	protected String bridgeUrl = "";
@@ -141,6 +142,19 @@ abstract class CodexBridgeBaseSupport {
 	void log(String message) {
 		provider.appendLog(DateTimeFormatter.ISO_INSTANT.format(Instant.now()) + " " + message);
 		Msg.info(plugin, "CodexBridge " + message);
+	}
+
+	protected void setRequestProgram(Program program) {
+		requestProgram.set(program);
+	}
+
+	protected Program responseProgram() {
+		Program program = requestProgram.get();
+		return program == null ? plugin.getCurrentProgram() : program;
+	}
+
+	protected void clearRequestProgram() {
+		requestProgram.remove();
 	}
 
 	RepositoryState repositoryStateFor(Program program) {
@@ -286,6 +300,18 @@ abstract class CodexBridgeBaseSupport {
 		}
 		try {
 			return object.get(key).getAsInt();
+		}
+		catch (Exception ignored) {
+			return defaultValue;
+		}
+	}
+
+	protected long optLong(JsonObject object, String key, long defaultValue) {
+		if (object == null || !object.has(key)) {
+			return defaultValue;
+		}
+		try {
+			return object.get(key).getAsLong();
 		}
 		catch (Exception ignored) {
 			return defaultValue;

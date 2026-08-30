@@ -128,6 +128,11 @@ def session_files() -> list[Path]:
     return sorted(cfg.bridge_sessions_dir.glob("*.json"))
 
 
+def application_files() -> list[Path]:
+    cfg.bridge_applications_dir.mkdir(parents=True, exist_ok=True)
+    return sorted(cfg.bridge_applications_dir.glob("*.json"))
+
+
 def _read_session_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -350,6 +355,7 @@ def _session_matches(
     requested_session: str,
     requested_project: str,
     requested_program: str,
+    requested_program_id: str = "",
 ) -> bool:
     if not session_file.exists():
         return False
@@ -368,13 +374,32 @@ def _session_matches(
         ):
             return False
     if requested_program:
-        prog_name = _read_session_value(session_file, "program_name")
-        prog_path = _read_session_value(session_file, "program_path")
-        if not (
-            prog_name == requested_program
-            or prog_path == requested_program
-            or prog_path.endswith(f"/{requested_program}")
+        payload = _read_session_json(session_file)
+        programs = [
+            {
+                "program_name": payload.get("program_name", ""),
+                "program_path": payload.get("program_path", ""),
+            }
+        ]
+        programs.extend(
+            item for item in payload.get("open_programs", []) if isinstance(item, dict)
+        )
+        if not any(
+            str(program.get("program_name") or "") == requested_program
+            or str(program.get("program_path") or "") == requested_program
+            or str(program.get("program_path") or "").endswith(f"/{requested_program}")
+            for program in programs
         ):
+            return False
+    if requested_program_id:
+        payload = _read_session_json(session_file)
+        ids = {str(payload.get("current_program_id") or "")}
+        ids.update(
+            str(item.get("program_id") or "")
+            for item in payload.get("open_programs", [])
+            if isinstance(item, dict)
+        )
+        if requested_program_id not in ids:
             return False
     return True
 
@@ -383,12 +408,19 @@ def find_matching_sessions(
     requested_session: str = "",
     requested_project: str = "",
     requested_program: str = "",
+    requested_program_id: str = "",
 ) -> list[Path]:
     prune_stale_sessions()
     return [
         sf
         for sf in session_files()
-        if _session_matches(sf, requested_session, requested_project, requested_program)
+        if _session_matches(
+            sf,
+            requested_session,
+            requested_project,
+            requested_program,
+            requested_program_id,
+        )
     ]
 
 
@@ -396,18 +428,25 @@ def resolve_session_file(
     requested_session: str = "",
     requested_project: str = "",
     requested_program: str = "",
+    requested_program_id: str = "",
 ) -> Path:
-    if not requested_session and not requested_project and not requested_program:
+    if not requested_session and not requested_project and not requested_program and not requested_program_id:
         sf = current_session_file()
         if sf:
             return sf
         raise RuntimeError("bridge session not found; arm or select a bridge session first")
 
-    matches = find_matching_sessions(requested_session, requested_project, requested_program)
+    matches = find_matching_sessions(
+        requested_session,
+        requested_project,
+        requested_program,
+        requested_program_id,
+    )
     if not matches:
         raise RuntimeError(
             f"no bridge session found for session={requested_session!r} "
             f"project={requested_project!r} program={requested_program!r}"
+            f" program_id={requested_program_id!r}"
         )
     if len(matches) == 1:
         return matches[0]
@@ -419,6 +458,48 @@ def resolve_session_file(
     )
 
 
+def list_application_inventory() -> list[dict[str, Any]]:
+    heartbeat_timeout_seconds = 15.0
+    records: list[dict[str, Any]] = []
+    for path in application_files():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        try:
+            pid = int(payload.get("pid", 0))
+        except (TypeError, ValueError):
+            pid = 0
+        heartbeat_age_seconds: float | None = None
+        heartbeat = str(payload.get("last_heartbeat") or "")
+        try:
+            observed = datetime.fromisoformat(heartbeat.replace("Z", "+00:00"))
+            heartbeat_age_seconds = max(
+                0.0,
+                (datetime.now(timezone.utc) - observed.astimezone(timezone.utc)).total_seconds(),
+            )
+        except (TypeError, ValueError):
+            pass
+        record = dict(payload)
+        record["inventory_file"] = str(path)
+        record["pid_alive"] = check_pid_alive(pid) if pid > 0 else False
+        record["heartbeat_age_seconds"] = heartbeat_age_seconds
+        if not record["pid_alive"]:
+            record["status"] = "stale"
+        elif heartbeat_age_seconds is None or heartbeat_age_seconds > heartbeat_timeout_seconds:
+            record["status"] = "unresponsive"
+        else:
+            record["status"] = "live"
+        records.append(record)
+    records.sort(
+        key=lambda item: (str(item.get("last_heartbeat", "")), str(item.get("application_id", ""))),
+        reverse=True,
+    )
+    return records
+
+
 # ---------------------------------------------------------------------------
 # Bridge request files (arm/disarm signals to Ghidra)
 # ---------------------------------------------------------------------------
@@ -428,16 +509,21 @@ def write_request_file(
     requested_session: str = "",
     project_name: str = "",
     program_name: str = "",
+    application_id: str = "",
+    tool_id: str = "",
 ) -> Path:
     ensure_bridge_dirs()
     request_id = new_uuid()
     payload = {
-        "version": 1,
+        "version": 2,
+        "schema_version": "cerberus.bridge.request.v2",
         "request_id": request_id,
         "command": command,
         "session_id": requested_session,
         "project_name": project_name,
         "program_name": program_name,
+        "application_id": application_id,
+        "tool_id": tool_id,
         "requested_at": utc_now(),
     }
     request_file = cfg.bridge_requests_dir / f"{request_id}.json"

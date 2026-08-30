@@ -81,6 +81,28 @@ python3 -m cerberus_re_skill bridge call /edit/comment '{"project":"codex_true_s
 python3 -m cerberus_re_skill bridge call /program/save '{"project":"codex_true_smoke","program":"true","write":true,"description":"raw bridge validation"}'
 ```
 
+Mutation responses include a `result.bridge_operation` receipt pointing to the
+immutable operation log. Rename and function-signature receipts also contain a
+canonical replay descriptor. To replay one, submit its `request_body` to its
+`endpoint`; it uses stable address/storage identity and executable SHA-256
+rather than the old name or a volatile program version.
+
+Save responses include the mutation operation IDs covered by that save and
+bounded transaction-wait telemetry:
+
+```json
+{
+  "saved": true,
+  "covered_operation_ids": ["<mutation-operation-id>"],
+  "save_attempts": 1,
+  "save_wait_millis": 25
+}
+```
+
+An HTTP 409 from `/program/save` means Ghidra did not finish an active analysis
+transaction within the bounded wait; the bridge does not force or terminate
+that transaction.
+
 Destructive patch calls additionally require `destructive=true`.
 
 ## Body Files And Stdin

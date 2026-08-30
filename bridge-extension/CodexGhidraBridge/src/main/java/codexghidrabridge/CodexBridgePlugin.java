@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import ghidra.app.CorePluginPackage;
 import ghidra.app.plugin.ProgramPlugin;
+import ghidra.app.services.ProgramManager;
 import ghidra.framework.model.DomainObjectChangedEvent;
 import ghidra.framework.model.DomainObjectListener;
 import ghidra.framework.plugintool.PluginInfo;
@@ -153,6 +154,18 @@ public class CodexBridgePlugin extends ProgramPlugin implements DomainObjectList
 		return service.getBridgeUrl();
 	}
 
+	String getSessionId() {
+		return service.getSessionId();
+	}
+
+	String getApplicationId() {
+		return CodexBridgeIdentity.applicationId();
+	}
+
+	String getToolId() {
+		return CodexBridgeIdentity.toolId(tool);
+	}
+
 	public boolean isBridgeArmed() {
 		return service.isArmed();
 	}
@@ -181,9 +194,19 @@ public class CodexBridgePlugin extends ProgramPlugin implements DomainObjectList
 		return currentProgram.getFunctionManager().getFunctionContaining(currentLocation.getAddress());
 	}
 
-	boolean navigateTo(Address address) {
+	boolean navigateTo(Program program, Address address, boolean activate) {
 		if (address == null) {
 			return false;
+		}
+		if (program != currentProgram) {
+			if (!activate) {
+				return false;
+			}
+			ProgramManager manager = tool.getService(ProgramManager.class);
+			if (manager == null) {
+				return false;
+			}
+			manager.setCurrentProgram(program);
 		}
 		boolean result = goTo(address);
 		refreshProvider();

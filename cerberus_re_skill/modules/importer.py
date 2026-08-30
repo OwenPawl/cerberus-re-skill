@@ -6,14 +6,24 @@ import hashlib
 import json
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 from cerberus_re_skill.core.config import cfg
 from cerberus_re_skill.core.ghidra_locator import analyze_headless_path
 from cerberus_re_skill.core.subprocess_utils import find_python, find_tool, run
-from cerberus_re_skill.core.utils import flag_enabled, sanitize_name, timestamp
+from cerberus_re_skill.core.utils import flag_enabled, sanitize_name, timestamp, write_json_atomic
 from cerberus_re_skill.modules.headless_lock import project_headless_lock
+from cerberus_re_skill.modules.project_access import routed_project_read
+from cerberus_re_skill.modules.static_reliability import (
+    SWIFT_SYMBOL_SIDECAR,
+    build_swift_symbol_sidecar,
+    filter_expected_dyld_warnings,
+    summarize_import_diagnostics,
+    write_swift_symbol_sidecar,
+)
 
 HEADLESS_SCRIPT_FAILURE_MARKERS = (
     "ERROR REPORT SCRIPT ERROR",
@@ -199,13 +209,28 @@ def import_analyze(
     cmd += ["-log", str(log_file), "-scriptlog", str(script_log)]
 
     with project_headless_lock(project_name, project_location, operation="import-analyze"):
-        run(cmd, env=env, check=True)
+        try:
+            process_result = run(cmd, env=env, check=True, capture_output=True)
+        except subprocess.CalledProcessError as exc:
+            _replay_import_process_output(exc)
+            raise
+    _replay_import_process_output(process_result)
 
     failure_reason = _import_failure_reason(log_file, script_log)
     if failure_reason:
         raise RuntimeError(f"Ghidra import failed: {failure_reason}")
 
     summary = _summarize_import_log(log_file, script_log)
+    swift_symbol_sidecar = ""
+    swift_symbol_preservation: dict[str, Any] = {}
+    if summary["symbol_length_failures"]:
+        sidecar_path = cfg.export_dir(project_name, program_name) / SWIFT_SYMBOL_SIDECAR
+        swift_symbol_preservation = _preserve_overlength_swift_symbols(
+            binary,
+            sidecar_path,
+            warning_count=summary["symbol_length_failures"],
+        )
+        swift_symbol_sidecar = str(sidecar_path)
 
     return {
         "ok": True,
@@ -217,6 +242,8 @@ def import_analyze(
         "log": str(log_file),
         "script_log": str(script_log),
         "warnings": summary,
+        "swift_symbol_sidecar": swift_symbol_sidecar,
+        "swift_symbol_preservation": swift_symbol_preservation,
         "skip_macho_reexports": skip_macho_reexports,
         "macho_arch": macho_arch_info,
         "disabled_analysis_options": disabled_options,
@@ -253,43 +280,53 @@ def _import_failure_reason(log_file: Path, script_log: Path) -> str:
 
 
 def _summarize_import_log(log_file: Path, script_log: Path) -> dict:
-    unresolved_count = 0
-    system = private = swift_rt = other = 0
-    symbol_length_failures = 0
-    demangle_failures = 0
+    log_text = log_file.read_text(encoding="utf-8", errors="replace") if log_file.exists() else ""
+    script_text = (
+        script_log.read_text(encoding="utf-8", errors="replace")
+        if script_log.exists()
+        else ""
+    )
+    return summarize_import_diagnostics(log_text, script_text)
 
-    if log_file.exists():
-        text = log_file.read_text(encoding="utf-8", errors="replace")
-        for line in text.splitlines():
-            if "-> not found in project" in line:
-                unresolved_count += 1
-                m = re.search(r"\[(.+?)\]", line)
-                path = m.group(1) if m else ""
-                if path.startswith("/usr/lib/swift/"):
-                    swift_rt += 1
-                elif path.startswith("/System/Library/PrivateFrameworks/"):
-                    private += 1
-                elif path.startswith("/System/Library/Frameworks/") or path.startswith("/usr/lib/"):
-                    system += 1
-                else:
-                    other += 1
-            if "Symbol name exceeds maximum length" in line:
-                symbol_length_failures += 1
 
-    if script_log.exists():
-        with script_log.open(encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                if "Unable to demangle:" in line:
-                    demangle_failures += 1
+def _replay_import_process_output(result: Any) -> None:
+    for attribute, stream in (("stdout", sys.stdout), ("stderr", sys.stderr)):
+        text = _decode_process_bytes(getattr(result, attribute, None))
+        filtered, _suppressed = filter_expected_dyld_warnings(text)
+        if filtered:
+            stream.write(filtered)
+            stream.flush()
 
+
+def _preserve_overlength_swift_symbols(
+    binary: Path,
+    sidecar_path: Path,
+    *,
+    warning_count: int,
+) -> dict[str, Any]:
+    nm = find_tool("nm")
+    nm_output: str | None = None
+    error = ""
+    if not nm:
+        error = "nm was not found on PATH"
+    else:
+        result = run([nm, "-a", binary], check=False, capture_output=True)
+        if result.returncode == 0:
+            nm_output = _decode_process_bytes(result.stdout)
+        else:
+            error = _decode_process_bytes(result.stderr).strip() or f"nm exited {result.returncode}"
+    payload = build_swift_symbol_sidecar(
+        binary,
+        warning_count=warning_count,
+        nm_output=nm_output,
+        nm_tool=nm or "",
+        error=error,
+    )
+    write_swift_symbol_sidecar(sidecar_path, payload)
     return {
-        "unresolved_count": unresolved_count,
-        "unresolved_system": system,
-        "unresolved_private": private,
-        "unresolved_swift_runtime": swift_rt,
-        "unresolved_other": other,
-        "symbol_length_failures": symbol_length_failures,
-        "demangle_failures": demangle_failures,
+        "status": payload["status"],
+        "preserved_symbol_count": payload["preserved_symbol_count"],
+        "sidecar": str(sidecar_path),
     }
 
 
@@ -340,20 +377,11 @@ def run_script(
     if not project_file.exists():
         raise RuntimeError(f"project {project_name!r} not found at {project_file}")
 
-    bridge_sessions = _matching_bridge_session_summaries(project_name, program_name or "")
-    if bridge_sessions:
-        session_list = ", ".join(bridge_sessions)
-        raise RuntimeError(
-            "active bridge session holds the Ghidra project lock; close it before "
-            f"running headless script exports: python3 -m cerberus_re_skill bridge close --project {project_name}. "
-            f"Matching session(s): {session_list}"
-        )
-
-    project_location = cfg.project_location(project_name)
     log_dir = cfg.log_dir(project_name)
     ts = timestamp()
     log_file = log_dir / f"script-{ts}.log"
     script_log = log_dir / f"script-{ts}.script.log"
+    routing_log = log_dir / f"script-{ts}.routing.json"
     script_path = cfg.script_path_str(extra_script_paths)
 
     require_tools()
@@ -361,27 +389,34 @@ def run_script(
     log_dir.mkdir(parents=True, exist_ok=True)
 
     headless = _headless()
-    cmd: list[str] = [
-        str(headless),
-        str(project_location),
-        project_name,
-        "-readOnly",
-    ]
-    if not flag_enabled(os.environ.get("GHIDRA_RUN_SCRIPT_ANALYSIS", "0")):
-        cmd += ["-noanalysis"]
-    cmd += [
-        "-scriptPath", script_path,
-        "-postScript", script_name,
-    ]
-    if script_args:
-        cmd += script_args
-    if program_name:
-        cmd += ["-process", program_name]
-    cmd += _optional_headless_args()
-    cmd += ["-log", str(log_file), "-scriptlog", str(script_log)]
+    with routed_project_read(project_name, program_name or "") as route:
+        routing = route.evidence()
+        write_json_atomic(routing_log, routing)
+        cmd: list[str] = [
+            str(headless),
+            str(route.project_location),
+            route.project_name,
+            "-readOnly",
+        ]
+        if not flag_enabled(os.environ.get("GHIDRA_RUN_SCRIPT_ANALYSIS", "0")):
+            cmd += ["-noanalysis"]
+        cmd += [
+            "-scriptPath", script_path,
+            "-postScript", script_name,
+        ]
+        if script_args:
+            cmd += script_args
+        if program_name:
+            cmd += ["-process", program_name]
+        cmd += _optional_headless_args()
+        cmd += ["-log", str(log_file), "-scriptlog", str(script_log)]
 
-    with project_headless_lock(project_name, project_location, operation=f"run-script:{script_name}"):
-        result = run(cmd, env=env, check=False, capture_output=True)
+        with project_headless_lock(
+            route.project_name,
+            route.project_location,
+            operation=f"run-script:{script_name}",
+        ):
+            result = run(cmd, env=env, check=False, capture_output=True)
 
     failure = _headless_script_failure(
         result.returncode,
@@ -399,37 +434,9 @@ def run_script(
         "script_name": script_name,
         "log": str(log_file),
         "script_log": str(script_log),
+        "routing": routing,
+        "routing_log": str(routing_log),
     }
-
-
-def _matching_bridge_session_summaries(project_name: str, program_name: str) -> list[str]:
-    try:
-        from cerberus_re_skill.modules.bridge_sessions import find_matching_sessions
-    except Exception:
-        return []
-
-    try:
-        matches = find_matching_sessions("", project_name, program_name)
-    except Exception:
-        return []
-
-    summaries: list[str] = []
-    for session_file in matches:
-        try:
-            payload = json.loads(Path(session_file).read_text(encoding="utf-8"))
-        except Exception:
-            summaries.append(str(session_file))
-            continue
-        session_id = str(payload.get("session_id") or Path(session_file).stem)
-        pid = payload.get("pid")
-        program = payload.get("program_name") or payload.get("program_path") or ""
-        details = f"{session_id}"
-        if pid:
-            details += f" pid={pid}"
-        if program:
-            details += f" program={program}"
-        summaries.append(details)
-    return summaries
 
 
 def _headless_script_failure(
