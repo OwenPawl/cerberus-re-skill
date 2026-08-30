@@ -14,6 +14,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from pydantic import BaseModel
 
 from .mcp_jobs import JobStore
+from .modules.mission_checkpoint import CheckpointError, CheckpointStore
 from .mcp_runtime import (
     BLOCKED,
     FAILED,
@@ -230,6 +231,7 @@ def create_server(settings: MCPSettings | None = None) -> FastMCP:
     settings.ensure_state()
     runner = CommandRunner(settings)
     jobs = JobStore(settings)
+    checkpoints = CheckpointStore(settings.state_dir / "checkpoints")
     server = FastMCP(
         "cerberus-re",
         log_level="WARNING",
@@ -247,6 +249,98 @@ def create_server(settings: MCPSettings | None = None) -> FastMCP:
         """Report whether long-run-agent mission tools are composed into this server."""
         status = SUCCESS if companion["available"] else UNVERIFIED
         return envelope(status, data=companion, note=companion["reason"])
+
+    def checkpoint_result(action: str, transaction_id: str, operation: Any) -> dict[str, Any]:
+        try:
+            data = operation()
+        except (CheckpointError, OSError, ValueError) as error:
+            append_audit(
+                settings,
+                {
+                    "tier": "checkpoint",
+                    "action": action,
+                    "transaction_id": transaction_id,
+                    "outcome": "failed",
+                    "detail": str(error),
+                },
+            )
+            return envelope(FAILED, note=str(error))
+        append_audit(
+            settings,
+            {
+                "tier": "checkpoint",
+                "action": action,
+                "transaction_id": transaction_id,
+                "outcome": "success",
+            },
+        )
+        return envelope(SUCCESS, data=data, note=f"checkpoint {action} succeeded")
+
+    @server.tool()
+    def checkpoint_prepare(
+        transaction_id: str,
+        mission_id: str,
+        target: dict[str, Any],
+        dependencies: list[dict[str, Any]],
+        providers: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Prepare one immutable checkpoint transaction after validating target identity."""
+        return checkpoint_result(
+            "prepare",
+            transaction_id,
+            lambda: checkpoints.prepare(
+                transaction_id,
+                mission_id=mission_id,
+                target=target,
+                dependencies=dependencies,
+                providers=providers or {},
+            ),
+        )
+
+    @server.tool()
+    def checkpoint_save(
+        transaction_id: str,
+        routing: dict[str, Any],
+        provider_payloads: dict[str, dict[str, Any]],
+        expected_generation: int | None = None,
+    ) -> dict[str, Any]:
+        """Commit routing and provider state with optional generation CAS protection."""
+        return checkpoint_result(
+            "save",
+            transaction_id,
+            lambda: checkpoints.checkpoint(
+                transaction_id,
+                routing=routing,
+                provider_payloads=provider_payloads,
+                expected_generation=expected_generation,
+            ),
+        )
+
+    @server.tool()
+    def checkpoint_verify(transaction_id: str) -> dict[str, Any]:
+        """Verify the committed event chain and every referenced content digest."""
+        return checkpoint_result(
+            "verify", transaction_id, lambda: checkpoints.verify(transaction_id)
+        )
+
+    @server.tool()
+    def checkpoint_restore(transaction_id: str) -> dict[str, Any]:
+        """Read verified checkpoint state without assuming saved live handles are reusable."""
+        return checkpoint_result(
+            "restore", transaction_id, lambda: checkpoints.restore(transaction_id)
+        )
+
+    @server.tool()
+    def checkpoint_resume_pack(
+        transaction_id: str,
+        max_bytes: int = 65536,
+    ) -> dict[str, Any]:
+        """Build a bounded verified resume pack, failing rather than truncating."""
+        return checkpoint_result(
+            "resume_pack",
+            transaction_id,
+            lambda: checkpoints.resume_pack(transaction_id, max_bytes=max_bytes),
+        )
 
     @server.tool()
     def env_doctor(frida_target: str = "") -> dict[str, Any]:
