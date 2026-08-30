@@ -1,3 +1,4 @@
+import io
 import json
 import tempfile
 import unittest
@@ -7,10 +8,66 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from cerberus_re_skill.core.config import cfg
-from cerberus_re_skill.modules.importer import _stage_macho_arch, import_analyze, run_script
+from cerberus_re_skill.modules.importer import (
+    _preserve_overlength_swift_symbols,
+    _replay_import_process_output,
+    _stage_macho_arch,
+    import_analyze,
+    run_script,
+)
 
 
 class ImportAnalyzeTests(unittest.TestCase):
+    def test_import_output_suppresses_expected_dyld_flood_only(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        result = SimpleNamespace(
+            stdout=(
+                b"INFO [/System/Library/Frameworks/Foundation.framework/Foundation] "
+                b"-> not found in project\nanalysis complete\n"
+            ),
+            stderr=b"WARN [@rpath/Owned.framework/Owned] -> not found in project\n",
+        )
+
+        with (
+            patch("cerberus_re_skill.modules.importer.sys.stdout", stdout),
+            patch("cerberus_re_skill.modules.importer.sys.stderr", stderr),
+        ):
+            _replay_import_process_output(result)
+
+        self.assertEqual(stdout.getvalue(), "analysis complete\n")
+        self.assertIn("@rpath/Owned.framework/Owned", stderr.getvalue())
+
+    def test_preserves_overlength_swift_symbols_in_atomic_sidecar(self) -> None:
+        symbol = "_$s" + ("LongIdentity" * 450)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = root / "Framework"
+            sidecar = root / "exports" / "swift_symbol_aliases.json"
+            binary.write_bytes(b"fixture")
+            with (
+                patch("cerberus_re_skill.modules.importer.find_tool", return_value="/usr/bin/nm"),
+                patch(
+                    "cerberus_re_skill.modules.importer.run",
+                    return_value=SimpleNamespace(
+                        returncode=0,
+                        stdout=f"0000000000001000 T {symbol}\n".encode(),
+                        stderr=b"",
+                    ),
+                ),
+            ):
+                result = _preserve_overlength_swift_symbols(
+                    binary,
+                    sidecar,
+                    warning_count=1,
+                )
+            payload = json.loads(sidecar.read_text(encoding="utf-8"))
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["preserved_symbol_count"], 1)
+        self.assertEqual(payload["aliases"][0]["original_name"], symbol)
+        self.assertLess(len(payload["aliases"][0]["stable_alias"]), 2000)
+
     def _capture_import_command(
         self,
         skip_macho_reexports: bool,

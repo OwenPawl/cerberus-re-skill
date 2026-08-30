@@ -6,12 +6,14 @@
 
 Core bundle files:
 
+- `bundle_manifest.json`: completion marker and SHA-256 inventory for the seven standard Apple-bundle JSON files. `status=complete` plus matching file hashes is the completion contract; `status=publishing`, a missing manifest, or a hash mismatch means the bundle must not be treated as complete. Apple-bundle entrypoints build in a hidden sibling staging directory and publish this manifest last.
 - `program_summary.json`: program metadata, image base, memory blocks, symbol counts, and function counts.
 - `objc_metadata.json`: Objective-C classes, protocols, categories, selectors, refs, and method metadata.
 - `function_inventory.json`: discovered functions with addresses, signatures, parameters, and xref counts.
 - `symbols.json`: symbols with import/export categorization.
 - `strings.json`: defined strings with block names and sampled xrefs.
 - `swift_metadata.json`: Swift symbols, metadata methods, runtime artifacts, property records, metadata-section summaries, and decoded Swift field/capture descriptors when `__swift5_fieldmd` or `__swift5_capture` are present. `field_descriptors` exposes stored-field names and mangled type references; `capture_descriptors` exposes captured symbolic type references such as `Unchecked<LocalInterface.Handoff>` so closure/request-shape evidence does not require ad hoc memory parsing.
+- `swift_symbol_aliases.json`: import-time sidecar written when Ghidra reports overlength symbol losses. A static `nm` pass preserves each complete Swift identity, its SHA-256, and a bounded deterministic `stable_alias`; `status=unavailable` records when the source identity could not be recovered instead of silently claiming preservation.
 
 Structure exports:
 

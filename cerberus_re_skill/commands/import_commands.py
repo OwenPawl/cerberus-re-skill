@@ -61,12 +61,18 @@ def import_analyze(
                 console.print("\n[yellow]Import warnings:[/yellow]")
                 if w.get("unresolved_count"):
                     console.print(
-                        f"  unresolved external programs: {w['unresolved_count']} "
+                        f"  unresolved dependencies: {w['unresolved_count']} "
                         f"(system={w['unresolved_system']} private={w['unresolved_private']} "
-                        f"swift_runtime={w['unresolved_swift_runtime']} other={w['unresolved_other']})"
+                        f"swift_runtime={w['unresolved_swift_runtime']} other={w['unresolved_other']}); "
+                        "system/private/Swift entries are expected for many single-image dyld imports"
                     )
                 if w.get("symbol_length_failures"):
-                    console.print(f"  overlength symbol failures: {w['symbol_length_failures']}")
+                    preservation = result.get("swift_symbol_preservation", {})
+                    console.print(
+                        f"  overlength symbol failures: {w['symbol_length_failures']} "
+                        f"(preserved={preservation.get('preserved_symbol_count', 0)} "
+                        f"sidecar={result.get('swift_symbol_sidecar') or '<unavailable>'})"
+                    )
                 if w.get("demangle_failures"):
                     console.print(f"  demangle failures: {w['demangle_failures']}")
     except Exception as e:
