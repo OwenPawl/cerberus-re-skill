@@ -104,6 +104,12 @@ class EvidenceGraphTests(unittest.TestCase):
                 store.transitive_dependencies(finding["id"]),
                 {raw["id"], observation["id"], hypothesis["id"]},
             )
+            gate = store.certification_gate([hypothesis["id"]])
+            self.assertTrue(gate["certifiable"])
+            self.assertEqual(
+                gate["closure_ids"],
+                sorted([raw["id"], observation["id"], hypothesis["id"]]),
+            )
 
     def test_graph_identity_is_independent_of_insertion_and_dependency_order(self) -> None:
         with tempfile.TemporaryDirectory() as first_tmp, tempfile.TemporaryDirectory() as second_tmp:
