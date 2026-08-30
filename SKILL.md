@@ -138,6 +138,12 @@ cerberus-re frida recheck-attach \
   --native-arg-preview \
   --require-runtime-hit \
   --allow-runtime
+cerberus-re frida gadget-probe <owned-binary> \
+  --gadget /path/to/FridaGadget.dylib \
+  --script /path/to/autonomous-probe.js \
+  --stable-target-key <stable-owned-target-id> \
+  --output-dir /tmp/cerberus-gadget-evidence \
+  --allow-runtime
 ```
 
 Prefer `Module!symbol` for native exports when the intended framework or dylib
@@ -148,6 +154,10 @@ ObjC hooks (`--selector`), and native hooks (`--native-symbol` or `--address`)
 are separate Frida recheck modes; run separate commands when you need coverage
 from more than one mode. Native hooks always preserve raw register strings under
 `args`; `--native-arg-preview` adds bounded best-effort string/module previews
+for readable values. If task-port attachment is blocked for an owned analysis
+copy, `gadget-probe` can launch that copy with a content-addressed Gadget,
+configuration, and autonomous script through `DYLD_INSERT_LIBRARIES`. Treat
+this as launch-injection evidence, not proof that ordinary Frida attach works.
 for those registers without making signature-correctness claims.
 
 After LLDB or Frida emits `runtime_hits.json`, correlate it back to static

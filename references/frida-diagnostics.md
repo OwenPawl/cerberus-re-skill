@@ -198,6 +198,31 @@ sudo -n /opt/cerberus-re/frida-venv/bin/frida -p <pid> -l /path/to/script.js
 
 This is fallback-only. Do not prefer it on hosts where the native path works.
 
+## Gadget Launch Fallback
+
+When task-port attachment remains blocked but launching an owned analysis copy
+is acceptable, Frida Gadget provides a separate injection path:
+
+```bash
+cerberus-re frida gadget-probe /tmp/analysis/owned-target \
+  --gadget /path/to/FridaGadget.dylib \
+  --script /path/to/autonomous-probe.js \
+  --stable-target-key com.example.owned-target \
+  --parameters '{"target_symbol":"interesting_export"}' \
+  --output-dir /tmp/cerberus-gadget-evidence \
+  --allow-runtime
+```
+
+Without `--allow-runtime`, the command only writes the immutable plan and
+staged helpers. A live run injects the staged Gadget with
+`DYLD_INSERT_LIBRARIES`, observes the owned child for a bounded window, and
+terminates only that child if the window elapses. The script must use Gadget's
+autonomous script interaction and emit one-line JSON events prefixed with
+`CERBERUS_FRIDA_GADGET `. Reports distinguish initialized zero-hit windows,
+hits, structured rejection, launch failure, and target crash. A successful
+Gadget run does not establish that `frida -p` attachment or spawn gating works;
+preserve the attach failure as an independent transport result.
+
 ## Dry-Run Script Validation
 
 Generated Frida scripts can be syntax-checked without attach permission:
