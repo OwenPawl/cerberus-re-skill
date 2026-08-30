@@ -4,6 +4,7 @@ from pathlib import Path
 import stat
 import tempfile
 import unittest
+from unittest import mock
 
 from cerberus_re_skill.modules.probe_plan import (
     ProbePlanError,
@@ -166,6 +167,27 @@ class ProbePlanTests(unittest.TestCase):
             self.assertEqual(first["helper_id"], f"sha256:{first['sha256']}")
             self.assertEqual(path.stat().st_mode & stat.S_IWUSR, 0)
             self.assertFalse(first["executable"])
+            self.assertEqual(list(path.parent.glob(".*.tmp")), [])
+
+    def test_materialize_helper_recovers_read_only_temp_unlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            original_unlink = Path.unlink
+            denied_once = False
+
+            def windows_unlink(path: Path, *args: object, **kwargs: object) -> None:
+                nonlocal denied_once
+                if path.suffix == ".tmp" and not denied_once:
+                    denied_once = True
+                    raise PermissionError("simulated Windows read-only hard link")
+                original_unlink(path, *args, **kwargs)
+
+            with mock.patch.object(Path, "unlink", windows_unlink):
+                helper = materialize_helper(Path(tmp), "probe.js", b"send('ready');")
+
+            path = Path(helper["path"])
+            self.assertTrue(denied_once)
+            self.assertEqual(path.read_bytes(), b"send('ready');")
+            self.assertEqual(path.stat().st_mode & stat.S_IWUSR, 0)
             self.assertEqual(list(path.parent.glob(".*.tmp")), [])
 
     def test_materialize_helper_detects_corrupt_existing_content(self) -> None:

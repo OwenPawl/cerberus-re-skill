@@ -135,6 +135,7 @@ def materialize_helper(
     root_path = Path(_absolute_path(root, field="helper root"))
     destination = root_path / "sha256" / digest[:2] / digest / helper_name
     destination.parent.mkdir(parents=True, exist_ok=True)
+    immutable_mode = 0o555 if executable else 0o444
 
     if destination.exists() or destination.is_symlink():
         _verify_helper_content(destination, digest, len(payload), executable)
@@ -142,14 +143,16 @@ def materialize_helper(
 
     fd, tmp_name = tempfile.mkstemp(prefix=f".{helper_name}.", suffix=".tmp", dir=destination.parent)
     tmp_path = Path(tmp_name)
+    published = False
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        tmp_path.chmod(0o555 if executable else 0o444)
+        tmp_path.chmod(immutable_mode)
         try:
             os.link(tmp_path, destination)
+            published = True
         except FileExistsError:
             _verify_helper_content(destination, digest, len(payload), executable)
         _fsync_directory(destination.parent)
@@ -158,6 +161,13 @@ def materialize_helper(
             tmp_path.unlink()
         except FileNotFoundError:
             pass
+        except PermissionError:
+            # Windows refuses to unlink a read-only hard link. The temp is ours;
+            # restore the published link's immutable mode after retrying cleanup.
+            tmp_path.chmod(0o600)
+            tmp_path.unlink()
+            if published:
+                destination.chmod(immutable_mode)
 
     _verify_helper_content(destination, digest, len(payload), executable)
     return _helper_identity(destination, helper_name, digest, len(payload), executable)
