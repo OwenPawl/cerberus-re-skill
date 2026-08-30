@@ -14,6 +14,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from pydantic import BaseModel
 
 from .mcp_jobs import JobStore
+from .mcp_probe_evidence import register_probe_evidence_tools
 from .modules.mission_checkpoint import CheckpointError, CheckpointStore
 from .mcp_runtime import (
     BLOCKED,
@@ -238,11 +239,13 @@ def create_server(settings: MCPSettings | None = None) -> FastMCP:
         instructions=(
             "Use the static/dynamic/instrumentation evidence loop. Runtime operations "
             "and bridge mutations are gated and audited. Read envelope status instead "
-            "of inferring success from prose. When mission_* tools are available, use "
+            "of inferring success from prose. ProbePlan and evidence tools are artifact-only. "
+            "When mission_* tools are available, use "
             "them for durable state, claims, friction, artifacts, and closeout."
         ),
     )
     companion = _register_mission_companion(server)
+    register_probe_evidence_tools(server, settings)
 
     @server.tool()
     def mission_companion_status() -> dict[str, Any]:
@@ -830,7 +833,8 @@ def create_server(settings: MCPSettings | None = None) -> FastMCP:
             "Loop: import_analyze -> export_apple_bundle -> focused static reports -> "
             "guarded lldb_trace/frida_recheck_attach -> runtime_enrich. Runtime and bridge "
             "mutation denials return blocked and must not be routed through cerberus_run. "
-            "Treat no_hit and unverified as distinct from success. "
+            "Use probe_plan_* and evidence_* before runtime execution, and treat no_hit "
+            "and unverified as distinct from success. "
             + mission
         )
 

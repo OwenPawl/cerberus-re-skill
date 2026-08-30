@@ -13,6 +13,34 @@ reads and approved mutations, and restart-safe background jobs. Use
 mutation gates; network, installer, publishing, and arbitrary-script commands
 remain blocked unless the explicit unsafe passthrough override is set.
 
+## Probe Plans And Evidence
+
+The artifact-only ProbePlan surface does not launch or attach to a target:
+
+- `probe_plan_create` binds a workspace executable, stable target key,
+  LLDB/Frida transport, timeout, detach/kill policy, expected signals, immutable
+  helper identities, and output paths into `ghidra-re.probe-plan.v1`.
+- `probe_plan_verify` accepts exactly one inline plan or workspace plan path and
+  rechecks executable/helper content plus every confined path.
+- `probe_plan_write` atomically writes a verified plan.
+- `probe_lifecycle_record` appends one preflight, attach, launch, hit, detach,
+  liveness, crash, or relaunch event to a plan-bound lifecycle file.
+- `probe_lifecycle_summarize` verifies and summarizes that file. A timeout is
+  reported as timeout and never inferred to be a no-hit observation.
+
+Immutable evidence uses `evidence_append`, `evidence_export`, and bounded
+`evidence_query`. `evidence_certification_gate` is read-only and verifies the
+full dependency closure plus existing workspace verification files.
+`evidence_certify` reruns that gate before appending a certified finding;
+`evidence_append` rejects direct requests for certified status.
+
+All paths may be workspace-relative or absolute inside `GHIDRA_WORKSPACE`.
+Parent traversal and symlink escapes fail with `status=failed`. Certification
+failures return `status=blocked`; malformed schemas, corrupt identities, helper
+drift, and path violations return `status=failed`. Helper content is limited to
+1 MiB per helper, plan helper/output counts are bounded, and evidence queries
+return at most 200 nodes or dependency IDs per call.
+
 Every tool returns `status`, `artifacts`, `warnings`, `command`, `exit_code`,
 bounded `stdout`/`stderr`, and parsed `data` when JSON was recovered. Treat
 `success`, `no_hit`, `blocked`, `failed`, and `unverified` as different evidence

@@ -443,11 +443,13 @@ class EvidenceGraphStore:
         visited.discard(node_id)
         return visited
 
-    def _require_certifiable(self, dependencies: list[str]) -> None:
-        if not dependencies:
+    def certification_gate(self, dependencies: Iterable[str]) -> dict[str, Any]:
+        """Validate and describe the dependency closure required for certification."""
+        dependency_ids = sorted(set(dependencies))
+        if not dependency_ids:
             raise CertificationError("certified findings require at least one dependency")
         closure: set[str] = set()
-        for node_id in dependencies:
+        for node_id in dependency_ids:
             closure.add(node_id)
             closure.update(self.transitive_dependencies(node_id))
         failures = []
@@ -462,6 +464,14 @@ class EvidenceGraphStore:
                 failures.append(f"{node_id} lacks {', '.join(missing)}")
         if failures:
             raise CertificationError("finding dependency closure is not certifiable: " + "; ".join(failures))
+        return {
+            "certifiable": True,
+            "dependency_ids": dependency_ids,
+            "closure_ids": sorted(closure),
+        }
+
+    def _require_certifiable(self, dependencies: list[str]) -> None:
+        self.certification_gate(dependencies)
 
     def add_finding(
         self,
