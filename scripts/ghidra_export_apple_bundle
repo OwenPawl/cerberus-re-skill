@@ -46,7 +46,20 @@ timestamp="$(ghidra_re_timestamp)"
 log_file="$log_dir/export-apple-bundle-${timestamp}.log"
 script_log="$log_dir/export-apple-bundle-${timestamp}.script.log"
 script_path="$(ghidra_re_script_path)"
-mkdir -p "$export_dir" "$log_dir"
+export_parent="$(dirname "$export_dir")"
+mkdir -p "$export_parent" "$log_dir"
+staging_dir="$(mktemp -d "$export_parent/.$(basename "$export_dir").staging.XXXXXX")"
+lock_dir=""
+
+cleanup() {
+  if [[ -n "$staging_dir" ]]; then
+    rm -rf -- "$staging_dir"
+  fi
+  if [[ -n "$lock_dir" ]]; then
+    ghidra_re_release_headless_lock "$lock_dir"
+  fi
+}
+trap cleanup EXIT
 
 optional_args=()
 while IFS= read -r -d '' arg; do
@@ -64,7 +77,7 @@ if ! ghidra_re_flag_enabled "${GHIDRA_RUN_SCRIPT_ANALYSIS:-0}"; then
 fi
 cmd+=(
   "-scriptPath" "$script_path"
-  "-postScript" "ExportAppleBundle.java" "outdir=$export_dir"
+  "-postScript" "ExportAppleBundle.java" "outdir=$staging_dir"
   "-process" "$program_name"
 )
 if [[ ${#optional_args[@]} -gt 0 ]]; then
@@ -73,9 +86,20 @@ fi
 cmd+=("-log" "$log_file" "-scriptlog" "$script_log")
 
 lock_dir="$(ghidra_re_acquire_headless_lock "$project_name" "export-apple-bundle")"
-trap 'ghidra_re_release_headless_lock "$lock_dir"' EXIT
 "${cmd[@]}"
 ghidra_re_release_headless_lock "$lock_dir"
+lock_dir=""
+
+PYTHONPATH="$GHIDRA_RE_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$(ghidra_re_python)" \
+  - "$staging_dir" "$export_dir" >/dev/null <<'PY'
+import sys
+
+from cerberus_re_skill.modules.static_reliability import publish_apple_bundle
+
+publish_apple_bundle(sys.argv[1], sys.argv[2])
+PY
+rm -rf -- "$staging_dir"
+staging_dir=""
 trap - EXIT
 
 printf '{\n'
@@ -83,6 +107,7 @@ printf '  "ok": true,\n'
 printf '  "project_name": "%s",\n' "$project_name"
 printf '  "program_name": "%s",\n' "$program_name"
 printf '  "output": "%s",\n' "$export_dir"
+printf '  "manifest": "%s/bundle_manifest.json",\n' "$export_dir"
 printf '  "log": "%s",\n' "$log_file"
 printf '  "script_log": "%s"\n' "$script_log"
 printf '}\n'

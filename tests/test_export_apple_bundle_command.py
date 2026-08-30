@@ -5,6 +5,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+
+from cerberus_re_skill.modules.static_reliability import (
+    APPLE_BUNDLE_FILES,
+    validate_apple_bundle,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +27,36 @@ class ExportAppleBundleCommandTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Export the standard Apple-focused JSON bundle", result.stdout)
+
+    def test_export_command_stages_then_publishes_complete_bundle(self) -> None:
+        from cerberus_re_skill.commands.export_static import export_apple_bundle_cmd
+
+        observed_output_dirs = []
+
+        def fake_run_script(_script, _project, _program, *, script_args):
+            staging = Path(script_args[0].removeprefix("outdir="))
+            observed_output_dirs.append(staging)
+            for name in APPLE_BUNDLE_FILES:
+                (staging / name).write_text('{"ok":true}\n', encoding="utf-8")
+            return {"ok": True}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "bundle"
+            with (
+                patch(
+                    "cerberus_re_skill.modules.importer.run_script",
+                    side_effect=fake_run_script,
+                ),
+                patch("cerberus_re_skill.commands.export_static._print_json"),
+                patch("cerberus_re_skill.commands.export_static.console.print"),
+            ):
+                export_apple_bundle_cmd("demo", "Demo", str(destination))
+            manifest = validate_apple_bundle(destination)
+            staging_path = observed_output_dirs[0]
+
+        self.assertEqual(manifest["status"], "complete")
+        self.assertNotEqual(staging_path, destination)
+        self.assertFalse(staging_path.exists())
 
     def test_swift_demangle_cached_miss_returns_non_null_sentinel(self) -> None:
         ghidra_install = Path(os.environ.get("GHIDRA_INSTALL_DIR", "/Applications/Ghidra"))

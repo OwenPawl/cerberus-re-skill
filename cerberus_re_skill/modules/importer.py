@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,13 @@ from cerberus_re_skill.core.ghidra_locator import analyze_headless_path
 from cerberus_re_skill.core.subprocess_utils import find_python, find_tool, run
 from cerberus_re_skill.core.utils import flag_enabled, sanitize_name, timestamp
 from cerberus_re_skill.modules.headless_lock import project_headless_lock
+from cerberus_re_skill.modules.static_reliability import (
+    SWIFT_SYMBOL_SIDECAR,
+    build_swift_symbol_sidecar,
+    filter_expected_dyld_warnings,
+    summarize_import_diagnostics,
+    write_swift_symbol_sidecar,
+)
 
 HEADLESS_SCRIPT_FAILURE_MARKERS = (
     "ERROR REPORT SCRIPT ERROR",
@@ -199,13 +208,28 @@ def import_analyze(
     cmd += ["-log", str(log_file), "-scriptlog", str(script_log)]
 
     with project_headless_lock(project_name, project_location, operation="import-analyze"):
-        run(cmd, env=env, check=True)
+        try:
+            process_result = run(cmd, env=env, check=True, capture_output=True)
+        except subprocess.CalledProcessError as exc:
+            _replay_import_process_output(exc)
+            raise
+    _replay_import_process_output(process_result)
 
     failure_reason = _import_failure_reason(log_file, script_log)
     if failure_reason:
         raise RuntimeError(f"Ghidra import failed: {failure_reason}")
 
     summary = _summarize_import_log(log_file, script_log)
+    swift_symbol_sidecar = ""
+    swift_symbol_preservation: dict[str, Any] = {}
+    if summary["symbol_length_failures"]:
+        sidecar_path = cfg.export_dir(project_name, program_name) / SWIFT_SYMBOL_SIDECAR
+        swift_symbol_preservation = _preserve_overlength_swift_symbols(
+            binary,
+            sidecar_path,
+            warning_count=summary["symbol_length_failures"],
+        )
+        swift_symbol_sidecar = str(sidecar_path)
 
     return {
         "ok": True,
@@ -217,6 +241,8 @@ def import_analyze(
         "log": str(log_file),
         "script_log": str(script_log),
         "warnings": summary,
+        "swift_symbol_sidecar": swift_symbol_sidecar,
+        "swift_symbol_preservation": swift_symbol_preservation,
         "skip_macho_reexports": skip_macho_reexports,
         "macho_arch": macho_arch_info,
         "disabled_analysis_options": disabled_options,
@@ -253,43 +279,53 @@ def _import_failure_reason(log_file: Path, script_log: Path) -> str:
 
 
 def _summarize_import_log(log_file: Path, script_log: Path) -> dict:
-    unresolved_count = 0
-    system = private = swift_rt = other = 0
-    symbol_length_failures = 0
-    demangle_failures = 0
+    log_text = log_file.read_text(encoding="utf-8", errors="replace") if log_file.exists() else ""
+    script_text = (
+        script_log.read_text(encoding="utf-8", errors="replace")
+        if script_log.exists()
+        else ""
+    )
+    return summarize_import_diagnostics(log_text, script_text)
 
-    if log_file.exists():
-        text = log_file.read_text(encoding="utf-8", errors="replace")
-        for line in text.splitlines():
-            if "-> not found in project" in line:
-                unresolved_count += 1
-                m = re.search(r"\[(.+?)\]", line)
-                path = m.group(1) if m else ""
-                if path.startswith("/usr/lib/swift/"):
-                    swift_rt += 1
-                elif path.startswith("/System/Library/PrivateFrameworks/"):
-                    private += 1
-                elif path.startswith("/System/Library/Frameworks/") or path.startswith("/usr/lib/"):
-                    system += 1
-                else:
-                    other += 1
-            if "Symbol name exceeds maximum length" in line:
-                symbol_length_failures += 1
 
-    if script_log.exists():
-        with script_log.open(encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                if "Unable to demangle:" in line:
-                    demangle_failures += 1
+def _replay_import_process_output(result: Any) -> None:
+    for attribute, stream in (("stdout", sys.stdout), ("stderr", sys.stderr)):
+        text = _decode_process_bytes(getattr(result, attribute, None))
+        filtered, _suppressed = filter_expected_dyld_warnings(text)
+        if filtered:
+            stream.write(filtered)
+            stream.flush()
 
+
+def _preserve_overlength_swift_symbols(
+    binary: Path,
+    sidecar_path: Path,
+    *,
+    warning_count: int,
+) -> dict[str, Any]:
+    nm = find_tool("nm")
+    nm_output: str | None = None
+    error = ""
+    if not nm:
+        error = "nm was not found on PATH"
+    else:
+        result = run([nm, "-a", binary], check=False, capture_output=True)
+        if result.returncode == 0:
+            nm_output = _decode_process_bytes(result.stdout)
+        else:
+            error = _decode_process_bytes(result.stderr).strip() or f"nm exited {result.returncode}"
+    payload = build_swift_symbol_sidecar(
+        binary,
+        warning_count=warning_count,
+        nm_output=nm_output,
+        nm_tool=nm or "",
+        error=error,
+    )
+    write_swift_symbol_sidecar(sidecar_path, payload)
     return {
-        "unresolved_count": unresolved_count,
-        "unresolved_system": system,
-        "unresolved_private": private,
-        "unresolved_swift_runtime": swift_rt,
-        "unresolved_other": other,
-        "symbol_length_failures": symbol_length_failures,
-        "demangle_failures": demangle_failures,
+        "status": payload["status"],
+        "preserved_symbol_count": payload["preserved_symbol_count"],
+        "sidecar": str(sidecar_path),
     }
 
 

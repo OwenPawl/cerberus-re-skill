@@ -19,6 +19,11 @@ It resolves direct files and already-extracted cache copies, but exits with an
 explicit blocker instead of starting extraction when only the raw dyld cache is
 available.
 
+Single-image dyld imports commonly leave system frameworks, private frameworks,
+and Swift runtime images unresolved in the project. The import wrapper retains
+those lines in the Ghidra log but suppresses their console flood and reports one
+categorized summary. Unknown or project-local unresolved paths remain visible.
+
 ## What the export bundle looks for
 
 - Objective-C symbols such as `_OBJC_CLASS_$_*`, `_OBJC_METACLASS_$_*`, `_OBJC_PROTOCOL_$_*`

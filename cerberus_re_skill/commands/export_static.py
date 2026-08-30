@@ -33,16 +33,27 @@ def export_apple_bundle_cmd(
     """Export the standard Apple-focused JSON bundle for an existing project."""
     from cerberus_re_skill.core.config import cfg
     from cerberus_re_skill.modules.importer import run_script
+    from cerberus_re_skill.modules.static_reliability import (
+        APPLE_BUNDLE_MANIFEST,
+        apple_bundle_staging,
+        publish_apple_bundle,
+        validate_apple_bundle,
+    )
 
     try:
         out_path = Path(output_dir) if output_dir else cfg.export_dir(project, program)
-        result = run_script(
-            "ExportAppleBundle.java",
-            project,
-            program,
-            script_args=[f"outdir={out_path}"],
-        )
+        with apple_bundle_staging(out_path) as staging:
+            result = run_script(
+                "ExportAppleBundle.java",
+                project,
+                program,
+                script_args=[f"outdir={staging}"],
+            )
+            publish_apple_bundle(staging, out_path)
+        manifest = validate_apple_bundle(out_path)
         result["output"] = str(out_path)
+        result["manifest"] = str(out_path / APPLE_BUNDLE_MANIFEST)
+        result["bundle_id"] = manifest["bundle_id"]
         _print_json(result)
         if result.get("ok"):
             console.print(f"[green]Wrote[/green] {result['output']}")
